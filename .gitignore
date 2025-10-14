@@ -1,0 +1,13 @@
+# nybit gitignore
+bin/
+*.exe
+*.obj
+*.o
+*.dll
+*.so
+*.dylib
+*.pdb
+*.ilk
+.vscode/
+.idea/
+tools/
