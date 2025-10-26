@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "test_framework.h"
 #include <nybit/support.h>
@@ -70,6 +70,9 @@ void test_object_elf64_basic_structure(void);
 void test_object_elf64_relocations(void);
 void test_object_coff_basic_structure(void);
 void test_object_coff_relocations_and_long_names(void);
+void test_object_multi_function_and_relocations(void);
+void test_object_bounds_and_error_validation(void);
+void test_object_readelf_and_objdump_inspection(void);
 void test_object_e2e_link_executable(void);
 
 int main(void) {
@@ -140,6 +143,9 @@ int main(void) {
     RUN_TEST(test_object_elf64_relocations);
     RUN_TEST(test_object_coff_basic_structure);
     RUN_TEST(test_object_coff_relocations_and_long_names);
+    RUN_TEST(test_object_multi_function_and_relocations);
+    RUN_TEST(test_object_bounds_and_error_validation);
+    RUN_TEST(test_object_readelf_and_objdump_inspection);
     RUN_TEST(test_object_e2e_link_executable);
 
     if (g_tests_failed > 0) {

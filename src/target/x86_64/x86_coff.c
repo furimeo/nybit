@@ -1,5 +1,3 @@
-﻿// SPDX-License-Identifier: MPL-2.0
-// Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/object.h"
 #include <string.h>
 
@@ -74,7 +72,40 @@ static void coff_encode_name(Coff_Symbol *sym, Ny_Object_Buffer *strtab, Ny_Stri
 }
 
 bool ny_emit_coff_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *emod, Ny_Diagnostic_List *diags) {
-    (void)diags;
+    if (!out_buf || !emod) {
+        if (diags) ny_diagnostic_list_append(diags, "coff emission error: invalid null argument");
+        return false;
+    }
+
+    if (emod->text_section.count > UINT32_MAX) {
+        if (diags) ny_diagnostic_list_append(diags, "coff emission error: .text section size exceeds 4GB limit");
+        return false;
+    }
+
+    if (emod->text_section.reloc_count > UINT16_MAX) {
+        if (diags) ny_diagnostic_list_append(diags, "coff emission error: relocation count exceeds 16-bit field limit");
+        return false;
+    }
+
+    for (size_t i = 0; i < emod->function_count; i++) {
+        const X86_Function_Code *fn = &emod->functions[i];
+        if (fn->offset > emod->text_section.count || fn->offset + fn->size > emod->text_section.count) {
+            if (diags) ny_diagnostic_list_append(diags, "coff emission error: function bounds outside .text section");
+            return false;
+        }
+    }
+
+    for (size_t r = 0; r < emod->text_section.reloc_count; r++) {
+        const X86_Relocation *reloc = &emod->text_section.relocs[r];
+        if (reloc->code_offset + 4 > emod->text_section.count) {
+            if (diags) ny_diagnostic_list_append(diags, "coff emission error: relocation code offset outside .text bounds");
+            return false;
+        }
+        if (reloc->kind != X86_FIXUP_CALL_REL32 && reloc->kind != X86_FIXUP_GLOBAL_REL32) {
+            if (diags) ny_diagnostic_list_append(diags, "coff emission error: unsupported relocation kind");
+            return false;
+        }
+    }
 
     Ny_Object_Buffer symtab_buf;
     ny_obj_buf_init(&symtab_buf);

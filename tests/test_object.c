@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "test_framework.h"
 #include "nybit/object.h"
@@ -353,6 +353,238 @@ void test_object_coff_relocations_and_long_names(void) {
     ny_diagnostic_list_destroy(&diags);
     ny_obj_buf_destroy(&obj_buf);
     x86_encoded_mod_destroy(&emod);
+}
+
+void test_object_multi_function_and_relocations(void) {
+    X86_Encoded_Module emod;
+    x86_encoded_mod_init(&emod, ny_str("multi_test"));
+
+    /* Function 1: f1 at offset 0, size 6 */
+    const uint8_t code1[] = { 0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3 };
+    x86_buf_append_bytes(&emod.text_section, code1, sizeof(code1));
+
+    /* Function 2: f2 at offset 6, size 10, calls extern_a and extern_b */
+    const uint8_t code2[] = { 0xe8, 0x00, 0x00, 0x00, 0x00, 0xe8, 0x00, 0x00, 0x00, 0x00 };
+    x86_buf_append_bytes(&emod.text_section, code2, sizeof(code2));
+
+    ny_buf_grow((void **)&emod.functions, &emod.function_capacity, 2, sizeof(X86_Function_Code));
+    emod.functions[0] = (X86_Function_Code){ .name = ny_str("func_one"), .offset = 0, .size = sizeof(code1) };
+    emod.functions[1] = (X86_Function_Code){ .name = ny_str("func_two"), .offset = sizeof(code1), .size = sizeof(code2) };
+    emod.function_count = 2;
+
+    X86_Relocation r1 = { .kind = X86_FIXUP_CALL_REL32, .code_offset = 7, .symbol_name = ny_str("extern_alpha"), .addend = 0 };
+    X86_Relocation r2 = { .kind = X86_FIXUP_CALL_REL32, .code_offset = 12, .symbol_name = ny_str("extern_beta"), .addend = 0 };
+    x86_buf_append_reloc(&emod.text_section, r1);
+    x86_buf_append_reloc(&emod.text_section, r2);
+
+    /* Test ELF multi-function & reloc */
+    Ny_Object_Buffer elf_buf;
+    ny_obj_buf_init(&elf_buf);
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    TEST_ASSERT(ny_emit_elf64_x86_64(&elf_buf, &emod, &diags));
+
+    const Elf64_Test_Ehdr *ehdr = (const Elf64_Test_Ehdr *)elf_buf.bytes;
+    const Elf64_Test_Shdr *shdrs = (const Elf64_Test_Shdr *)(elf_buf.bytes + ehdr->e_shoff);
+    const Elf64_Test_Shdr *sh_rela = &shdrs[2];
+    TEST_ASSERT_EQ(sh_rela->sh_size, 2 * sizeof(Elf64_Test_Rela));
+
+    const Elf64_Test_Rela *rela = (const Elf64_Test_Rela *)(elf_buf.bytes + sh_rela->sh_offset);
+    TEST_ASSERT_EQ(rela[0].r_offset, 7);
+    TEST_ASSERT_EQ(rela[1].r_offset, 12);
+    ny_obj_buf_destroy(&elf_buf);
+
+    /* Test COFF multi-function & reloc */
+    Ny_Object_Buffer coff_buf;
+    ny_obj_buf_init(&coff_buf);
+    TEST_ASSERT(ny_emit_coff_x86_64(&coff_buf, &emod, &diags));
+
+    const Coff_Test_File_Header *fhdr = (const Coff_Test_File_Header *)coff_buf.bytes;
+    TEST_ASSERT_EQ(fhdr->NumberOfSymbols, 4);
+    const Coff_Test_Section_Header *shdr = (const Coff_Test_Section_Header *)(coff_buf.bytes + sizeof(Coff_Test_File_Header));
+    TEST_ASSERT_EQ(shdr->NumberOfRelocations, 2);
+
+    const Coff_Test_Relocation *crelocs = (const Coff_Test_Relocation *)(coff_buf.bytes + shdr->PointerToRelocations);
+    TEST_ASSERT_EQ(crelocs[0].VirtualAddress, 7);
+    TEST_ASSERT_EQ(crelocs[1].VirtualAddress, 12);
+
+    ny_obj_buf_destroy(&coff_buf);
+    ny_diagnostic_list_destroy(&diags);
+    x86_encoded_mod_destroy(&emod);
+}
+
+void test_object_bounds_and_error_validation(void) {
+    X86_Encoded_Module emod;
+    x86_encoded_mod_init(&emod, ny_str("invalid_mod"));
+
+    const uint8_t code[] = { 0xc3 };
+    x86_buf_append_bytes(&emod.text_section, code, sizeof(code));
+
+    /* Function out of bounds */
+    ny_buf_grow((void **)&emod.functions, &emod.function_capacity, 1, sizeof(X86_Function_Code));
+    emod.functions[0] = (X86_Function_Code){ .name = ny_str("bad_fn"), .offset = 10, .size = 5 };
+    emod.function_count = 1;
+
+    Ny_Object_Buffer buf;
+    ny_obj_buf_init(&buf);
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+
+    TEST_ASSERT(!ny_emit_elf64_x86_64(&buf, &emod, &diags));
+    TEST_ASSERT(diags.count > 0);
+    ny_diagnostic_list_destroy(&diags);
+
+    ny_diagnostic_list_init(&diags);
+    TEST_ASSERT(!ny_emit_coff_x86_64(&buf, &emod, &diags));
+    TEST_ASSERT(diags.count > 0);
+    ny_diagnostic_list_destroy(&diags);
+
+    /* Fix function bounds, add invalid relocation offset */
+    emod.functions[0].offset = 0;
+    emod.functions[0].size = 1;
+
+    X86_Relocation bad_reloc = {
+        .kind = X86_FIXUP_CALL_REL32,
+        .code_offset = 100,
+        .symbol_name = ny_str("ext"),
+        .addend = 0,
+    };
+    x86_buf_append_reloc(&emod.text_section, bad_reloc);
+
+    ny_diagnostic_list_init(&diags);
+    TEST_ASSERT(!ny_emit_elf64_x86_64(&buf, &emod, &diags));
+    TEST_ASSERT(diags.count > 0);
+    ny_diagnostic_list_destroy(&diags);
+
+    ny_diagnostic_list_init(&diags);
+    TEST_ASSERT(!ny_emit_coff_x86_64(&buf, &emod, &diags));
+    TEST_ASSERT(diags.count > 0);
+    ny_diagnostic_list_destroy(&diags);
+
+    ny_obj_buf_destroy(&buf);
+    x86_encoded_mod_destroy(&emod);
+}
+
+void test_object_readelf_and_objdump_inspection(void) {
+    const char *src =
+        "@function multi_a(%x: i32) -> i32;\n"
+        ".entry;\n"
+        "    %one = const 1;\n"
+        "    %res = add %x, %one;\n"
+        "    @return %res;\n"
+        ";;\n"
+        "@function multi_b(%y: i32) -> i32;\n"
+        ".entry;\n"
+        "    %two = const 2;\n"
+        "    %res = mul %y, %two;\n"
+        "    @return %res;\n"
+        ";;\n";
+
+    Ny_Context ctx;
+    ny_context_init(&ctx, "toolchain_check");
+
+    Ny_Parser parser;
+    ny_parser_init(&parser, &ctx.module, src, strlen(src), &ctx.arena);
+    TEST_ASSERT(ny_parse_module(&parser));
+
+    Ny_Diagnostic_List val_diags;
+    ny_diagnostic_list_init(&val_diags);
+    TEST_ASSERT(ny_validate_module(&ctx.module, &val_diags));
+    ny_diagnostic_list_destroy(&val_diags);
+
+    ny_opt_run_module_pipeline(&ctx.module, NY_OPT_O1);
+
+    const Ny_Target *tgt_sysv = ny_target_find("x86_64-sysv");
+    const Ny_Target *tgt_win = ny_target_find("x86_64-windows");
+
+    /* SysV ELF */
+    Ny_Machine_Module mmod_elf;
+    Ny_Diagnostic_List mdiags;
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(ny_ir_lower_to_mir(&ctx.module, &mmod_elf, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+
+    for (size_t f = 0; f < mmod_elf.function_count; f++) {
+        Ny_Diagnostic_List rdiags;
+        ny_diagnostic_list_init(&rdiags);
+        TEST_ASSERT(ny_regalloc_run(&mmod_elf.functions[f], tgt_sysv->abi, nullptr, &rdiags));
+        ny_diagnostic_list_destroy(&rdiags);
+    }
+    X86_Module xmod_elf;
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(x86_lower_machine_mod(tgt_sysv, &mmod_elf, &xmod_elf, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+    X86_Encoded_Module emod_elf;
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(x86_encode_module(&emod_elf, &xmod_elf, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+
+    Ny_Object_Buffer elf_buf;
+    ny_obj_buf_init(&elf_buf);
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(ny_emit_object_module(&elf_buf, tgt_sysv, &emod_elf, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+
+    FILE *felf = fopen("bin/test_check.o", "wb");
+    TEST_ASSERT(felf != nullptr);
+    fwrite(elf_buf.bytes, 1, elf_buf.count, felf);
+    fclose(felf);
+
+    /* Inspect ELF using readelf and objdump */
+    int elf_read_res = system("readelf -h bin/test_check.o > nul 2>&1");
+    TEST_ASSERT_EQ(elf_read_res, 0);
+    int elf_dump_res = system("objdump -dr bin/test_check.o > nul 2>&1");
+    TEST_ASSERT_EQ(elf_dump_res, 0);
+    remove("bin/test_check.o");
+
+    ny_obj_buf_destroy(&elf_buf);
+    x86_encoded_mod_destroy(&emod_elf);
+    x86_mod_destroy(&xmod_elf);
+    ny_mmod_destroy(&mmod_elf);
+
+    /* Windows COFF */
+    Ny_Machine_Module mmod_coff;
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(ny_ir_lower_to_mir(&ctx.module, &mmod_coff, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+
+    for (size_t f = 0; f < mmod_coff.function_count; f++) {
+        Ny_Diagnostic_List rdiags;
+        ny_diagnostic_list_init(&rdiags);
+        TEST_ASSERT(ny_regalloc_run(&mmod_coff.functions[f], tgt_win->abi, nullptr, &rdiags));
+        ny_diagnostic_list_destroy(&rdiags);
+    }
+    X86_Module xmod_coff;
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(x86_lower_machine_mod(tgt_win, &mmod_coff, &xmod_coff, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+    X86_Encoded_Module emod_coff;
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(x86_encode_module(&emod_coff, &xmod_coff, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+
+    Ny_Object_Buffer coff_buf;
+    ny_obj_buf_init(&coff_buf);
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(ny_emit_object_module(&coff_buf, tgt_win, &emod_coff, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+
+    FILE *fcoff = fopen("bin/test_check.obj", "wb");
+    TEST_ASSERT(fcoff != nullptr);
+    fwrite(coff_buf.bytes, 1, coff_buf.count, fcoff);
+    fclose(fcoff);
+
+    /* Inspect COFF using objdump */
+    int coff_dump_res = system("objdump -dr bin/test_check.obj > nul 2>&1");
+    TEST_ASSERT_EQ(coff_dump_res, 0);
+    remove("bin/test_check.obj");
+
+    ny_obj_buf_destroy(&coff_buf);
+    x86_encoded_mod_destroy(&emod_coff);
+    x86_mod_destroy(&xmod_coff);
+    ny_mmod_destroy(&mmod_coff);
+
+    ny_context_destroy(&ctx);
 }
 
 void test_object_e2e_link_executable(void) {
