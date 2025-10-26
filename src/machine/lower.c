@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/machine.h"
 #include "nybit/analysis.h"
@@ -383,6 +383,7 @@ bool ny_ir_lower_to_mir(const Ny_Module *ir_mod, Ny_Machine_Module *out_mmod, Ny
 
     for (size_t i = 0; i < ir_mod->function_count; i++) {
         const Ny_Function *fn = &ir_mod->functions[i];
+        if (fn->block_count == 0) continue;
         if (!lower_function(ir_mod, fn, out_mmod, diags)) {
             return false;
         }

@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #ifndef NYBIT_OBJECT_H
 #define NYBIT_OBJECT_H
@@ -33,6 +33,9 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
 bool ny_emit_coff_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *emod, Ny_Diagnostic_List *diags);
 
 bool ny_emit_object_module(Ny_Object_Buffer *out_buf, const Ny_Target *target, const X86_Encoded_Module *emod, Ny_Diagnostic_List *diags);
+
+bool ny_link_executable(const char *obj_path, const char *out_exe_path, const Ny_Target *target, Ny_Diagnostic_List *diags);
+bool ny_link_executable_with_extra(const char *const *obj_paths, size_t obj_count, const char *out_exe_path, const Ny_Target *target, Ny_Diagnostic_List *diags);
 
 #ifdef __cplusplus
 }

@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$Compiler = "$PSScriptRoot\tools\mingw\bin\gcc.exe",
     [switch]$RunTests,
     [switch]$RunMain
@@ -6,8 +6,12 @@
 # SPDX-License-Identifier: MPL-2.0
 # Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 
+if (-not (Test-Path $Compiler)) {
+    $Compiler = "gcc"
+}
+
 $compilerDir = Split-Path $Compiler
-if (Test-Path $compilerDir) {
+if ($compilerDir -and (Test-Path $compilerDir)) {
     $env:PATH = "$compilerDir;$env:PATH"
 }
 

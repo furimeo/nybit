@@ -587,6 +587,114 @@ void test_object_readelf_and_objdump_inspection(void) {
     ny_context_destroy(&ctx);
 }
 
+static bool compile_source_to_obj(const char *src, const char *out_obj_path, const Ny_Target *target) {
+    Ny_Context ctx;
+    ny_context_init(&ctx, "test_e2e");
+
+    Ny_Parser parser;
+    ny_parser_init(&parser, &ctx.module, src, strlen(src), &ctx.arena);
+    if (!ny_parse_module(&parser)) {
+        ny_parser_destroy(&parser);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_parser_destroy(&parser);
+
+    Ny_Diagnostic_List val_diags;
+    ny_diagnostic_list_init(&val_diags);
+    if (!ny_validate_module(&ctx.module, &val_diags)) {
+        ny_diagnostic_list_destroy(&val_diags);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_diagnostic_list_destroy(&val_diags);
+
+    ny_opt_run_module_pipeline(&ctx.module, NY_OPT_O1);
+
+    Ny_Machine_Module mmod;
+    Ny_Diagnostic_List mir_diags;
+    ny_diagnostic_list_init(&mir_diags);
+    if (!ny_ir_lower_to_mir(&ctx.module, &mmod, &mir_diags)) {
+        ny_diagnostic_list_destroy(&mir_diags);
+        ny_mmod_destroy(&mmod);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_diagnostic_list_destroy(&mir_diags);
+
+    for (size_t f = 0; f < mmod.function_count; f++) {
+        Ny_Diagnostic_List ra_diags;
+        ny_diagnostic_list_init(&ra_diags);
+        if (!ny_regalloc_run(&mmod.functions[f], target->abi, nullptr, &ra_diags) ||
+            !ny_mfunc_validate_allocated(&mmod.functions[f], &ra_diags)) {
+            ny_diagnostic_list_destroy(&ra_diags);
+            ny_mmod_destroy(&mmod);
+            ny_context_destroy(&ctx);
+            return false;
+        }
+        ny_diagnostic_list_destroy(&ra_diags);
+    }
+
+    X86_Module xmod;
+    Ny_Diagnostic_List x86_diags;
+    ny_diagnostic_list_init(&x86_diags);
+    if (!x86_lower_machine_mod(target, &mmod, &xmod, &x86_diags)) {
+        ny_diagnostic_list_destroy(&x86_diags);
+        x86_mod_destroy(&xmod);
+        ny_mmod_destroy(&mmod);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_diagnostic_list_destroy(&x86_diags);
+
+    X86_Encoded_Module emod;
+    Ny_Diagnostic_List enc_diags;
+    ny_diagnostic_list_init(&enc_diags);
+    if (!x86_encode_module(&emod, &xmod, &enc_diags)) {
+        ny_diagnostic_list_destroy(&enc_diags);
+        x86_encoded_mod_destroy(&emod);
+        x86_mod_destroy(&xmod);
+        ny_mmod_destroy(&mmod);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_diagnostic_list_destroy(&enc_diags);
+
+    Ny_Object_Buffer obj_buf;
+    ny_obj_buf_init(&obj_buf);
+    Ny_Diagnostic_List obj_diags;
+    ny_diagnostic_list_init(&obj_diags);
+    if (!ny_emit_object_module(&obj_buf, target, &emod, &obj_diags)) {
+        ny_diagnostic_list_destroy(&obj_diags);
+        ny_obj_buf_destroy(&obj_buf);
+        x86_encoded_mod_destroy(&emod);
+        x86_mod_destroy(&xmod);
+        ny_mmod_destroy(&mmod);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_diagnostic_list_destroy(&obj_diags);
+
+    FILE *fobj = fopen(out_obj_path, "wb");
+    if (!fobj) {
+        ny_obj_buf_destroy(&obj_buf);
+        x86_encoded_mod_destroy(&emod);
+        x86_mod_destroy(&xmod);
+        ny_mmod_destroy(&mmod);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    fwrite(obj_buf.bytes, 1, obj_buf.count, fobj);
+    fclose(fobj);
+
+    ny_obj_buf_destroy(&obj_buf);
+    x86_encoded_mod_destroy(&emod);
+    x86_mod_destroy(&xmod);
+    ny_mmod_destroy(&mmod);
+    ny_context_destroy(&ctx);
+    return true;
+}
+
 void test_object_e2e_link_executable(void) {
     const char *src =
         "@function nybit_compute() -> i32;\n"
@@ -597,79 +705,147 @@ void test_object_e2e_link_executable(void) {
         "    @return %res;\n"
         ";;\n";
 
-    Ny_Context ctx;
-    ny_context_init(&ctx, "test_e2e_obj");
-
-    Ny_Parser parser;
-    ny_parser_init(&parser, &ctx.module, src, strlen(src), &ctx.arena);
-    TEST_ASSERT(ny_parse_module(&parser));
-
-    Ny_Diagnostic_List val_diags;
-    ny_diagnostic_list_init(&val_diags);
-    TEST_ASSERT(ny_validate_module(&ctx.module, &val_diags));
-    ny_diagnostic_list_destroy(&val_diags);
-
-    ny_opt_run_module_pipeline(&ctx.module, NY_OPT_O1);
-
     const Ny_Target *target = ny_target_get_default();
-    Ny_Machine_Module mmod;
-    Ny_Diagnostic_List mir_diags;
-    ny_diagnostic_list_init(&mir_diags);
-    TEST_ASSERT(ny_ir_lower_to_mir(&ctx.module, &mmod, &mir_diags));
-    ny_diagnostic_list_destroy(&mir_diags);
-
-    for (size_t f = 0; f < mmod.function_count; f++) {
-        Ny_Diagnostic_List ra_diags;
-        ny_diagnostic_list_init(&ra_diags);
-        TEST_ASSERT(ny_regalloc_run(&mmod.functions[f], target->abi, nullptr, &ra_diags));
-        TEST_ASSERT(ny_mfunc_validate_allocated(&mmod.functions[f], &ra_diags));
-        ny_diagnostic_list_destroy(&ra_diags);
-    }
-
-    X86_Module xmod;
-    Ny_Diagnostic_List x86_diags;
-    ny_diagnostic_list_init(&x86_diags);
-    TEST_ASSERT(x86_lower_machine_mod(target, &mmod, &xmod, &x86_diags));
-    ny_diagnostic_list_destroy(&x86_diags);
-
-    X86_Encoded_Module emod;
-    Ny_Diagnostic_List enc_diags;
-    ny_diagnostic_list_init(&enc_diags);
-    TEST_ASSERT(x86_encode_module(&emod, &xmod, &enc_diags));
-    ny_diagnostic_list_destroy(&enc_diags);
-
-    Ny_Object_Buffer obj_buf;
-    ny_obj_buf_init(&obj_buf);
-    Ny_Diagnostic_List obj_diags;
-    ny_diagnostic_list_init(&obj_diags);
-    TEST_ASSERT(ny_emit_object_module(&obj_buf, target, &emod, &obj_diags));
-    ny_diagnostic_list_destroy(&obj_diags);
+    const char *obj_path = "bin/test_e2e_part.obj";
+    TEST_ASSERT(compile_source_to_obj(src, obj_path, target));
 
 #if defined(_WIN32)
-    FILE *fobj = fopen("bin/test_e2e_part.obj", "wb");
-    TEST_ASSERT(fobj != nullptr);
-    fwrite(obj_buf.bytes, 1, obj_buf.count, fobj);
-    fclose(fobj);
-
     FILE *fc = fopen("bin/test_e2e_driver.c", "w");
     TEST_ASSERT(fc != nullptr);
     fputs("extern int nybit_compute(void);\nint main(void) { return nybit_compute() == 42 ? 0 : 1; }\n", fc);
     fclose(fc);
 
-    int link_res = system("gcc bin/test_e2e_driver.c bin/test_e2e_part.obj -o bin/test_e2e_run.exe");
-    TEST_ASSERT_EQ(link_res, 0);
+    const char *objs[2] = { "bin/test_e2e_driver.c", obj_path };
+    Ny_Diagnostic_List link_diags;
+    ny_diagnostic_list_init(&link_diags);
+    bool link_ok = ny_link_executable_with_extra(objs, 2, "bin/test_e2e_run.exe", target, &link_diags);
+    TEST_ASSERT(link_ok);
+    ny_diagnostic_list_destroy(&link_diags);
 
     int run_res = system("bin\\test_e2e_run.exe");
     TEST_ASSERT_EQ(run_res, 0);
 
     remove("bin/test_e2e_driver.c");
-    remove("bin/test_e2e_part.obj");
+    remove(obj_path);
     remove("bin/test_e2e_run.exe");
 #endif
+}
 
-    ny_obj_buf_destroy(&obj_buf);
-    x86_encoded_mod_destroy(&emod);
-    x86_mod_destroy(&xmod);
-    ny_mmod_destroy(&mmod);
-    ny_context_destroy(&ctx);
+void test_object_e2e_internal_calls(void) {
+    const char *src =
+        "@function helper_mul(%x: i32, %y: i32) -> i32;\n"
+        ".entry;\n"
+        "    %res = mul %x, %y;\n"
+        "    @return %res;\n"
+        ";;\n\n"
+        "@function is_positive(%n: i32) -> i32;\n"
+        ".entry;\n"
+        "    %zero = const 0;\n"
+        "    %cond = cmp.gt.s %n, %zero;\n"
+        "    @branch_if %cond, .positive, .negative;\n"
+        ".positive;\n"
+        "    %one = const 1;\n"
+        "    @return %one;\n"
+        ".negative;\n"
+        "    %zero_ret = const 0;\n"
+        "    @return %zero_ret;\n"
+        ";;\n\n"
+        "@function main() -> i32;\n"
+        ".entry;\n"
+        "    %c6 = const 6;\n"
+        "    %c7 = const 7;\n"
+        "    %prod = call @helper_mul, %c6, %c7;\n"
+        "    %pos = call @is_positive, %prod;\n"
+        "    %zero = const 0;\n"
+        "    %cond = cmp.eq %pos, %zero;\n"
+        "    @branch_if %cond, .fail, .ok;\n"
+        ".ok;\n"
+        "    @return %prod;\n"
+        ".fail;\n"
+        "    %err = const 1;\n"
+        "    @return %err;\n"
+        ";;\n";
+
+    const Ny_Target *target = ny_target_get_default();
+    const char *obj_path = "bin/test_e2e_internal.obj";
+    const char *exe_path = "bin/test_e2e_internal.exe";
+
+    TEST_ASSERT(compile_source_to_obj(src, obj_path, target));
+
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    bool link_ok = ny_link_executable(obj_path, exe_path, target, &diags);
+    TEST_ASSERT(link_ok);
+    ny_diagnostic_list_destroy(&diags);
+
+    int exit_code = system("bin\\test_e2e_internal.exe");
+    TEST_ASSERT_EQ(exit_code, 42);
+
+    remove(obj_path);
+    remove(exe_path);
+}
+
+void test_object_e2e_external_calls(void) {
+    FILE *fc = fopen("bin/test_e2e_host.c", "w");
+    TEST_ASSERT(fc != nullptr);
+    fputs("int host_mult_add(int a, int b, int c) { return (a * b) + c; }\n", fc);
+    fclose(fc);
+
+    int c_build = system("gcc -c bin/test_e2e_host.c -o bin/test_e2e_host.o");
+    TEST_ASSERT_EQ(c_build, 0);
+
+    const char *src =
+        "@function main() -> i32;\n"
+        ".entry;\n"
+        "    %c5 = const 5;\n"
+        "    %c8 = const 8;\n"
+        "    %c2 = const 2;\n"
+        "    %res = call @host_mult_add, %c5, %c8, %c2;\n"
+        "    @return %res;\n"
+        ";;\n";
+
+    const Ny_Target *target = ny_target_get_default();
+    const char *ny_obj = "bin/test_e2e_ext_main.obj";
+    const char *exe_path = "bin/test_e2e_ext.exe";
+
+    TEST_ASSERT(compile_source_to_obj(src, ny_obj, target));
+
+    const char *objs[2] = { ny_obj, "bin/test_e2e_host.o" };
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    bool link_ok = ny_link_executable_with_extra(objs, 2, exe_path, target, &diags);
+    TEST_ASSERT(link_ok);
+    ny_diagnostic_list_destroy(&diags);
+
+    int exit_code = system("bin\\test_e2e_ext.exe");
+    TEST_ASSERT_EQ(exit_code, 42);
+
+    remove("bin/test_e2e_host.c");
+    remove("bin/test_e2e_host.o");
+    remove(ny_obj);
+    remove(exe_path);
+}
+
+void test_object_e2e_linker_diagnostics(void) {
+    const char *src =
+        "@function main() -> i32;\n"
+        ".entry;\n"
+        "    %res = call @undefined_external_symbol_12345;\n"
+        "    @return %res;\n"
+        ";;\n";
+
+    const Ny_Target *target = ny_target_get_default();
+    const char *obj_path = "bin/test_e2e_undef.obj";
+    const char *exe_path = "bin/test_e2e_undef.exe";
+
+    TEST_ASSERT(compile_source_to_obj(src, obj_path, target));
+
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    bool link_ok = ny_link_executable(obj_path, exe_path, target, &diags);
+    TEST_ASSERT(!link_ok);
+    TEST_ASSERT(diags.count > 0);
+    ny_diagnostic_list_destroy(&diags);
+
+    remove(obj_path);
 }

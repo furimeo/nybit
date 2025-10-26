@@ -74,6 +74,9 @@ void test_object_multi_function_and_relocations(void);
 void test_object_bounds_and_error_validation(void);
 void test_object_readelf_and_objdump_inspection(void);
 void test_object_e2e_link_executable(void);
+void test_object_e2e_internal_calls(void);
+void test_object_e2e_external_calls(void);
+void test_object_e2e_linker_diagnostics(void);
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -147,6 +150,9 @@ int main(void) {
     RUN_TEST(test_object_bounds_and_error_validation);
     RUN_TEST(test_object_readelf_and_objdump_inspection);
     RUN_TEST(test_object_e2e_link_executable);
+    RUN_TEST(test_object_e2e_internal_calls);
+    RUN_TEST(test_object_e2e_external_calls);
+    RUN_TEST(test_object_e2e_linker_diagnostics);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

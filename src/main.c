@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,7 +50,7 @@ static const char DEFAULT_DEMO_SOURCE[] =
     "    @return %res;\n"
     ";;\n";
 
-static char *read_entire_file(const char *path, size_t *out_len) {
+static char *read_entire_file(const char *path, size_t *out_len, size_t *out_cap) {
     FILE *f = nullptr;
     if (strcmp(path, "-") == 0) {
         f = stdin;
@@ -82,6 +82,7 @@ static char *read_entire_file(const char *path, size_t *out_len) {
         fclose(f);
     }
     *out_len = len;
+    *out_cap = cap;
     return buf;
 }
 
@@ -99,6 +100,8 @@ int main(int argc, char **argv) {
     bool emit_x86 = false;
     bool emit_bytes = false;
     bool emit_obj = false;
+    bool emit_exe = false;
+    bool emit_ir = false;
     const char *target_name = nullptr;
 
     for (int i = 1; i < argc; i++) {
@@ -125,6 +128,10 @@ int main(int argc, char **argv) {
             emit_bytes = true;
         } else if (strcmp(argv[i], "--emit-obj") == 0 || strcmp(argv[i], "-c") == 0) {
             emit_obj = true;
+        } else if (strcmp(argv[i], "--emit-exe") == 0) {
+            emit_exe = true;
+        } else if (strcmp(argv[i], "--emit-ir") == 0) {
+            emit_ir = true;
         } else if ((strcmp(argv[i], "--target") == 0 || strcmp(argv[i], "-target") == 0) && i + 1 < argc) {
             target_name = argv[++i];
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
@@ -137,12 +144,27 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (!emit_mir && !emit_x86 && !emit_bytes && !emit_obj && !emit_ir && !dump_raw) {
+        if (emit_exe || (input_file != nullptr && output_file != nullptr)) {
+            emit_exe = true;
+        }
+    }
+
+    if (emit_exe && !output_file) {
+#if defined(_WIN32)
+        output_file = "a.exe";
+#else
+        output_file = "a.out";
+#endif
+    }
+
     char *source_text = nullptr;
     size_t source_len = 0;
+    size_t source_cap = 0;
     bool free_source = false;
 
     if (input_file) {
-        source_text = read_entire_file(input_file, &source_len);
+        source_text = read_entire_file(input_file, &source_len, &source_cap);
         if (!source_text) return 1;
         free_source = true;
     } else {
@@ -166,7 +188,7 @@ int main(int argc, char **argv) {
         }
         ny_parser_destroy(&parser);
         ny_context_destroy(&ctx);
-        if (free_source) ny_free(source_text, source_len + 1);
+        if (free_source) ny_free(source_text, source_cap);
         return 1;
     }
     ny_parser_destroy(&parser);
@@ -180,7 +202,7 @@ int main(int argc, char **argv) {
         }
         ny_diagnostic_list_destroy(&val_diags);
         ny_context_destroy(&ctx);
-        if (free_source) ny_free(source_text, source_len + 1);
+        if (free_source) ny_free(source_text, source_cap);
         return 1;
     }
     ny_diagnostic_list_destroy(&val_diags);
@@ -201,18 +223,18 @@ int main(int argc, char **argv) {
             }
             ny_diagnostic_list_destroy(&val_diags);
             ny_context_destroy(&ctx);
-            if (free_source) ny_free(source_text, source_len + 1);
+            if (free_source) ny_free(source_text, source_cap);
             return 1;
         }
         ny_diagnostic_list_destroy(&val_diags);
     }
 
-    if (emit_x86 || emit_bytes || emit_obj) {
+    if (emit_x86 || emit_bytes || emit_obj || emit_exe) {
         const Ny_Target *target = target_name ? ny_target_find(target_name) : ny_target_get_default();
         if (!target) {
             fprintf(stderr, "error: unknown target '%s'\n", target_name ? target_name : "default");
             ny_context_destroy(&ctx);
-            if (free_source) ny_free(source_text, source_len + 1);
+            if (free_source) ny_free(source_text, source_cap);
             return 1;
         }
 
@@ -227,7 +249,7 @@ int main(int argc, char **argv) {
             ny_diagnostic_list_destroy(&mir_diags);
             ny_mmod_destroy(&mmod);
             ny_context_destroy(&ctx);
-            if (free_source) ny_free(source_text, source_len + 1);
+            if (free_source) ny_free(source_text, source_cap);
             return 1;
         }
         ny_diagnostic_list_destroy(&mir_diags);
@@ -243,7 +265,7 @@ int main(int argc, char **argv) {
                 ny_diagnostic_list_destroy(&ra_diags);
                 ny_mmod_destroy(&mmod);
                 ny_context_destroy(&ctx);
-                if (free_source) ny_free(source_text, source_len + 1);
+                if (free_source) ny_free(source_text, source_cap);
                 return 1;
             }
             bool val_ok = ny_mfunc_validate_allocated(&mmod.functions[f], &ra_diags);
@@ -254,7 +276,7 @@ int main(int argc, char **argv) {
                 ny_diagnostic_list_destroy(&ra_diags);
                 ny_mmod_destroy(&mmod);
                 ny_context_destroy(&ctx);
-                if (free_source) ny_free(source_text, source_len + 1);
+                if (free_source) ny_free(source_text, source_cap);
                 return 1;
             }
             ny_diagnostic_list_destroy(&ra_diags);
@@ -272,12 +294,12 @@ int main(int argc, char **argv) {
             x86_mod_destroy(&xmod);
             ny_mmod_destroy(&mmod);
             ny_context_destroy(&ctx);
-            if (free_source) ny_free(source_text, source_len + 1);
+            if (free_source) ny_free(source_text, source_cap);
             return 1;
         }
         ny_diagnostic_list_destroy(&x86_diags);
 
-        if (emit_obj) {
+        if (emit_exe) {
             X86_Encoded_Module emod;
             Ny_Diagnostic_List enc_diags;
             ny_diagnostic_list_init(&enc_diags);
@@ -291,7 +313,7 @@ int main(int argc, char **argv) {
                 x86_mod_destroy(&xmod);
                 ny_mmod_destroy(&mmod);
                 ny_context_destroy(&ctx);
-                if (free_source) ny_free(source_text, source_len + 1);
+                if (free_source) ny_free(source_text, source_cap);
                 return 1;
             }
             ny_diagnostic_list_destroy(&enc_diags);
@@ -311,7 +333,80 @@ int main(int argc, char **argv) {
                 x86_mod_destroy(&xmod);
                 ny_mmod_destroy(&mmod);
                 ny_context_destroy(&ctx);
-                if (free_source) ny_free(source_text, source_len + 1);
+                if (free_source) ny_free(source_text, source_cap);
+                return 1;
+            }
+            ny_diagnostic_list_destroy(&obj_diags);
+
+            char tmp_obj_path[1024];
+            snprintf(tmp_obj_path, sizeof(tmp_obj_path), "%s.tmp.obj", output_file);
+            FILE *out_f = fopen(tmp_obj_path, "wb");
+            if (!out_f) {
+                fprintf(stderr, "error: failed to open temporary object file '%s'\n", tmp_obj_path);
+                ny_obj_buf_destroy(&obj_buf);
+                x86_encoded_mod_destroy(&emod);
+                x86_mod_destroy(&xmod);
+                ny_mmod_destroy(&mmod);
+                ny_context_destroy(&ctx);
+                if (free_source) ny_free(source_text, source_cap);
+                return 1;
+            }
+            fwrite(obj_buf.bytes, 1, obj_buf.count, out_f);
+            fclose(out_f);
+            ny_obj_buf_destroy(&obj_buf);
+            x86_encoded_mod_destroy(&emod);
+
+            Ny_Diagnostic_List link_diags;
+            ny_diagnostic_list_init(&link_diags);
+            bool link_ok = ny_link_executable(tmp_obj_path, output_file, target, &link_diags);
+            remove(tmp_obj_path);
+            if (!link_ok) {
+                for (size_t i = 0; i < link_diags.count; i++) {
+                    fprintf(stderr, "%s\n", link_diags.items[i].message);
+                }
+                ny_diagnostic_list_destroy(&link_diags);
+                x86_mod_destroy(&xmod);
+                ny_mmod_destroy(&mmod);
+                ny_context_destroy(&ctx);
+                if (free_source) ny_free(source_text, source_cap);
+                return 1;
+            }
+            ny_diagnostic_list_destroy(&link_diags);
+        } else if (emit_obj) {
+            X86_Encoded_Module emod;
+            Ny_Diagnostic_List enc_diags;
+            ny_diagnostic_list_init(&enc_diags);
+            bool enc_ok = x86_encode_module(&emod, &xmod, &enc_diags);
+            if (!enc_ok) {
+                for (size_t i = 0; i < enc_diags.count; i++) {
+                    fprintf(stderr, "encode error: %s\n", enc_diags.items[i].message);
+                }
+                ny_diagnostic_list_destroy(&enc_diags);
+                x86_encoded_mod_destroy(&emod);
+                x86_mod_destroy(&xmod);
+                ny_mmod_destroy(&mmod);
+                ny_context_destroy(&ctx);
+                if (free_source) ny_free(source_text, source_cap);
+                return 1;
+            }
+            ny_diagnostic_list_destroy(&enc_diags);
+
+            Ny_Object_Buffer obj_buf;
+            ny_obj_buf_init(&obj_buf);
+            Ny_Diagnostic_List obj_diags;
+            ny_diagnostic_list_init(&obj_diags);
+            bool obj_ok = ny_emit_object_module(&obj_buf, target, &emod, &obj_diags);
+            if (!obj_ok) {
+                for (size_t i = 0; i < obj_diags.count; i++) {
+                    fprintf(stderr, "object emission error: %s\n", obj_diags.items[i].message);
+                }
+                ny_diagnostic_list_destroy(&obj_diags);
+                ny_obj_buf_destroy(&obj_buf);
+                x86_encoded_mod_destroy(&emod);
+                x86_mod_destroy(&xmod);
+                ny_mmod_destroy(&mmod);
+                ny_context_destroy(&ctx);
+                if (free_source) ny_free(source_text, source_cap);
                 return 1;
             }
             ny_diagnostic_list_destroy(&obj_diags);
@@ -325,7 +420,7 @@ int main(int argc, char **argv) {
                     x86_mod_destroy(&xmod);
                     ny_mmod_destroy(&mmod);
                     ny_context_destroy(&ctx);
-                    if (free_source) ny_free(source_text, source_len + 1);
+                    if (free_source) ny_free(source_text, source_cap);
                     return 1;
                 }
                 fwrite(obj_buf.bytes, 1, obj_buf.count, out_f);
@@ -351,7 +446,7 @@ int main(int argc, char **argv) {
                 x86_mod_destroy(&xmod);
                 ny_mmod_destroy(&mmod);
                 ny_context_destroy(&ctx);
-                if (free_source) ny_free(source_text, source_len + 1);
+                if (free_source) ny_free(source_text, source_cap);
                 return 1;
             }
             ny_diagnostic_list_destroy(&enc_diags);
@@ -364,7 +459,7 @@ int main(int argc, char **argv) {
                     x86_mod_destroy(&xmod);
                     ny_mmod_destroy(&mmod);
                     ny_context_destroy(&ctx);
-                    if (free_source) ny_free(source_text, source_len + 1);
+                    if (free_source) ny_free(source_text, source_cap);
                     return 1;
                 }
                 fwrite(emod.text_section.bytes, 1, emod.text_section.count, out_f);
@@ -384,7 +479,7 @@ int main(int argc, char **argv) {
                     x86_mod_destroy(&xmod);
                     ny_mmod_destroy(&mmod);
                     ny_context_destroy(&ctx);
-                    if (free_source) ny_free(source_text, source_len + 1);
+                    if (free_source) ny_free(source_text, source_cap);
                     return 1;
                 }
                 fputs(x86_dump, out_f);
@@ -407,7 +502,7 @@ int main(int argc, char **argv) {
             ny_diagnostic_list_destroy(&mir_diags);
             ny_mmod_destroy(&mmod);
             ny_context_destroy(&ctx);
-            if (free_source) ny_free(source_text, source_len + 1);
+            if (free_source) ny_free(source_text, source_cap);
             return 1;
         }
         ny_diagnostic_list_destroy(&mir_diags);
@@ -419,7 +514,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "error: failed to open output file '%s'\n", output_file);
                 ny_mmod_destroy(&mmod);
                 ny_context_destroy(&ctx);
-                if (free_source) ny_free(source_text, source_len + 1);
+                if (free_source) ny_free(source_text, source_cap);
                 return 1;
             }
             fputs(mir_dump, out_f);
@@ -435,7 +530,7 @@ int main(int argc, char **argv) {
             if (!out_f) {
                 fprintf(stderr, "error: failed to open output file '%s'\n", output_file);
                 ny_context_destroy(&ctx);
-                if (free_source) ny_free(source_text, source_len + 1);
+                if (free_source) ny_free(source_text, source_cap);
                 return 1;
             }
             fputs(opt_dump, out_f);
@@ -466,7 +561,7 @@ int main(int argc, char **argv) {
 
     ny_context_destroy(&ctx);
     if (free_source) {
-        ny_free(source_text, source_len + 1);
+        ny_free(source_text, source_cap);
     }
 
     if (g_ny_mem_tracker.current_allocated != 0) {

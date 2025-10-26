@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/parser.h"
 #include <stdio.h>
@@ -231,7 +231,15 @@ static bool parse_function(Ny_Parser *p) {
 
     if (!expect_tok(p, NY_TOK_LPAREN)) return false;
 
-    Ny_Function_ID fn_id = ny_module_create_function(p->module, name_tok.text, NY_TYPE_VOID, NY_CC_DEFAULT);
+    char name_buf[128];
+    snprintf(name_buf, sizeof(name_buf), "%.*s", (int)name_tok.text.len, name_tok.text.data);
+    Ny_Function *existing_fn = ny_module_get_function_by_name(p->module, name_buf);
+    Ny_Function_ID fn_id;
+    if (existing_fn && existing_fn->block_count == 0) {
+        fn_id = existing_fn->id;
+    } else {
+        fn_id = ny_module_create_function(p->module, name_tok.text, NY_TYPE_VOID, NY_CC_DEFAULT);
+    }
     Ny_Function *fn = ny_module_get_function(p->module, fn_id);
     p->builder.cur_fn = fn_id;
 
@@ -403,6 +411,10 @@ static bool parse_function(Ny_Parser *p) {
                     char buf[128];
                     snprintf(buf, sizeof(buf), "%.*s", (int)d_name.len, d_name.data);
                     Ny_Function *tgt = ny_module_get_function_by_name(p->module, buf);
+                    if (!tgt) {
+                        Ny_Function_ID fid = ny_module_create_function(p->module, d_name, NY_TYPE_I32, NY_CC_DEFAULT);
+                        tgt = ny_module_get_function(p->module, fid);
+                    }
                     if (op_count < 32) ops_buf[op_count++] = ny_operand_function(tgt ? tgt->id : NY_INVALID_FUNCTION);
                 } else if (p->curr.kind == NY_TOK_INT) {
                     if (op_count < 32) ops_buf[op_count++] = ny_operand_int(advance_tok(p).int_val);
@@ -605,6 +617,10 @@ static bool parse_function(Ny_Parser *p) {
                     char buf[128];
                     snprintf(buf, sizeof(buf), "%.*s", (int)d_name.len, d_name.data);
                     Ny_Function *tgt = ny_module_get_function_by_name(p->module, buf);
+                    if (!tgt) {
+                        Ny_Function_ID fid = ny_module_create_function(p->module, d_name, NY_TYPE_I32, NY_CC_DEFAULT);
+                        tgt = ny_module_get_function(p->module, fid);
+                    }
                     if (op_count < 32) ops_buf[op_count++] = ny_operand_function(tgt ? tgt->id : NY_INVALID_FUNCTION);
                 } else if (p->curr.kind == NY_TOK_INT) {
                     if (op_count < 32) ops_buf[op_count++] = ny_operand_int(advance_tok(p).int_val);
