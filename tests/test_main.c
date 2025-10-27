@@ -78,6 +78,16 @@ void test_object_e2e_internal_calls(void);
 void test_object_e2e_external_calls(void);
 void test_object_e2e_linker_diagnostics(void);
 
+void test_nygen_compile_raw_ir(void);
+void test_nygen_compile_opt_ir(void);
+void test_nygen_compile_machine_ir(void);
+void test_nygen_compile_asm(void);
+void test_nygen_compile_bytes(void);
+void test_nygen_compile_object_elf_and_coff(void);
+void test_nygen_diagnostics_on_error(void);
+void test_nygen_compile_executable(void);
+void test_nygen_cli_integration_e2e(void);
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -153,6 +163,16 @@ int main(void) {
     RUN_TEST(test_object_e2e_internal_calls);
     RUN_TEST(test_object_e2e_external_calls);
     RUN_TEST(test_object_e2e_linker_diagnostics);
+
+    RUN_TEST(test_nygen_compile_raw_ir);
+    RUN_TEST(test_nygen_compile_opt_ir);
+    RUN_TEST(test_nygen_compile_machine_ir);
+    RUN_TEST(test_nygen_compile_asm);
+    RUN_TEST(test_nygen_compile_bytes);
+    RUN_TEST(test_nygen_compile_object_elf_and_coff);
+    RUN_TEST(test_nygen_diagnostics_on_error);
+    RUN_TEST(test_nygen_compile_executable);
+    RUN_TEST(test_nygen_cli_integration_e2e);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

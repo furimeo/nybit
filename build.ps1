@@ -15,17 +15,40 @@ if ($compilerDir -and (Test-Path $compilerDir)) {
     $env:PATH = "$compilerDir;$env:PATH"
 }
 
+$Ar = Join-Path $compilerDir "ar.exe"
+if (-not (Test-Path $Ar)) {
+    $Ar = "ar"
+}
+
 if (-not (Test-Path "bin")) {
     New-Item -ItemType Directory -Path "bin" | Out-Null
+}
+
+$objDir = "bin/obj"
+if (-not (Test-Path $objDir)) {
+    New-Item -ItemType Directory -Path $objDir | Out-Null
 }
 
 $coreSources = (Get-ChildItem -Recurse -Filter *.c src | Where-Object { $_.Name -ne "main.c" }).FullName
 $testSources = (Get-ChildItem -Recurse -Filter *.c tests).FullName
 
-& $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude src/main.c $coreSources -o bin/nybit.exe
+$coreObjs = @()
+foreach ($src in $coreSources) {
+    $rel = Resolve-Path -Relative $src
+    $objName = ($rel -replace '[\\/:]', '_') -replace '\.c$', '.o'
+    $objPath = "$objDir/$objName"
+    $coreObjs += $objPath
+    & $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -c $src -o $objPath
+    if ($LASTEXITCODE -ne 0) { exit 1 }
+}
+
+& $Ar rcs bin/nygen.lib $coreObjs
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-& $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -Itests $testSources $coreSources -o bin/test_runner.exe
+& $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude src/main.c bin/nygen.lib -o bin/nybit.exe
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
+& $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -Itests $testSources bin/nygen.lib -o bin/test_runner.exe
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 if ($RunTests) {
