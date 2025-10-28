@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/ir.h"
 #include <stdio.h>
@@ -227,6 +227,25 @@ bool ny_validate_function(const Ny_Module *mod, const Ny_Function *fn, Ny_Diagno
 
 bool ny_validate_module(const Ny_Module *mod, Ny_Diagnostic_List *out_diags) {
     bool ok = true;
+
+    for (size_t g = 0; g < mod->global_count; g++) {
+        const Ny_Global *glob = &mod->globals[g];
+        if (glob->name.len == 0) {
+            if (out_diags) ny_diagnostic_list_append(out_diags, "module: global variable with empty name");
+            ok = false;
+        }
+        for (size_t g2 = g + 1; g2 < mod->global_count; g2++) {
+            if (ny_str_eq(glob->name, mod->globals[g2].name)) {
+                if (out_diags) {
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), "module: duplicate global variable '%.*s'", (int)glob->name.len, glob->name.data);
+                    ny_diagnostic_list_append(out_diags, buf);
+                }
+                ok = false;
+            }
+        }
+    }
+
     for (size_t i = 0; i < mod->function_count; i++) {
         if (!ny_validate_function(mod, &mod->functions[i], out_diags)) {
             ok = false;

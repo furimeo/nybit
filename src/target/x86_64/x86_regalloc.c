@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/regalloc.h"
 #include "nybit/target_x86_64.h"
@@ -123,6 +123,35 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
                         }
                         if (intervals[v].end_idx < current_inst_idx) {
                             intervals[v].end_idx = current_inst_idx;
+                        }
+                    }
+                } else if (ops[op_i].kind == NY_MOP_KIND_MEM) {
+                    if (ny_mreg_is_valid(ops[op_i].mem.base) && ops[op_i].mem.base.is_virtual) {
+                        uint32_t v = ops[op_i].mem.base.id;
+                        if (v < v_count) {
+                            if (!bitset_test(def_kill, words, b, v)) {
+                                bitset_set(use_gen, words, b, v);
+                            }
+                            if (intervals[v].start_idx > current_inst_idx) {
+                                intervals[v].start_idx = current_inst_idx;
+                            }
+                            if (intervals[v].end_idx < current_inst_idx) {
+                                intervals[v].end_idx = current_inst_idx;
+                            }
+                        }
+                    }
+                    if (ny_mreg_is_valid(ops[op_i].mem.index) && ops[op_i].mem.index.is_virtual) {
+                        uint32_t v = ops[op_i].mem.index.id;
+                        if (v < v_count) {
+                            if (!bitset_test(def_kill, words, b, v)) {
+                                bitset_set(use_gen, words, b, v);
+                            }
+                            if (intervals[v].start_idx > current_inst_idx) {
+                                intervals[v].start_idx = current_inst_idx;
+                            }
+                            if (intervals[v].end_idx < current_inst_idx) {
+                                intervals[v].end_idx = current_inst_idx;
+                            }
                         }
                     }
                 }
@@ -371,6 +400,41 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
                         ops[op_i].reg = scratch_reg;
                     } else {
                         ops[op_i].reg = ny_mreg_preg(intervals[v].assigned_phys, (Ny_Reg_Class)intervals[v].reg_class);
+                    }
+                } else if (ops[op_i].kind == NY_MOP_KIND_MEM) {
+                    if (ny_mreg_is_valid(ops[op_i].mem.base) && ops[op_i].mem.base.is_virtual) {
+                        uint32_t v = ops[op_i].mem.base.id;
+                        if (intervals[v].is_spilled) {
+                            Ny_Machine_Reg scratch_reg = ny_mreg_preg(X86_R11, (Ny_Reg_Class)intervals[v].reg_class);
+                            Ny_Machine_Operand load_op;
+                            memset(&load_op, 0, sizeof(load_op));
+                            load_op.kind = NY_MOP_KIND_MEM;
+                            load_op.mem.stack_slot = intervals[v].stack_slot;
+
+                            ny_mfunc_insert_before(fn, curr, NY_MOPC_LOAD, scratch_reg, &load_op, 1, 0);
+
+                            ops = ny_mfunc_get_operands(fn, &fn->instructions[curr]);
+                            ops[op_i].mem.base = scratch_reg;
+                        } else {
+                            ops[op_i].mem.base = ny_mreg_preg(intervals[v].assigned_phys, (Ny_Reg_Class)intervals[v].reg_class);
+                        }
+                    }
+                    if (ny_mreg_is_valid(ops[op_i].mem.index) && ops[op_i].mem.index.is_virtual) {
+                        uint32_t v = ops[op_i].mem.index.id;
+                        if (intervals[v].is_spilled) {
+                            Ny_Machine_Reg scratch_reg = ny_mreg_preg(X86_R10, (Ny_Reg_Class)intervals[v].reg_class);
+                            Ny_Machine_Operand load_op;
+                            memset(&load_op, 0, sizeof(load_op));
+                            load_op.kind = NY_MOP_KIND_MEM;
+                            load_op.mem.stack_slot = intervals[v].stack_slot;
+
+                            ny_mfunc_insert_before(fn, curr, NY_MOPC_LOAD, scratch_reg, &load_op, 1, 0);
+
+                            ops = ny_mfunc_get_operands(fn, &fn->instructions[curr]);
+                            ops[op_i].mem.index = scratch_reg;
+                        } else {
+                            ops[op_i].mem.index = ny_mreg_preg(intervals[v].assigned_phys, (Ny_Reg_Class)intervals[v].reg_class);
+                        }
                     }
                 }
             }

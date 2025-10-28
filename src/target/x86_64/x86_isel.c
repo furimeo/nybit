@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "x86_internal.h"
 #include <string.h>
@@ -17,6 +17,13 @@ static X86_Reg lower_reg(Ny_Machine_Reg mreg) {
 static X86_Mem lower_mem(Ny_Machine_Mem_Op mem, const X86_Stack_Frame *frame) {
     X86_Mem xmem;
     memset(&xmem, 0, sizeof(xmem));
+
+    if (mem.symbol_name.len > 0) {
+        xmem.is_rip_relative = true;
+        xmem.symbol = mem.symbol_name;
+        xmem.disp = mem.disp;
+        return xmem;
+    }
 
     if (mem.stack_slot != NY_INVALID_SLOT && mem.stack_slot < frame->slot_count) {
         xmem.base = x86_reg_phys(X86_RBP, 8);
@@ -474,6 +481,25 @@ bool x86_lower_machine_func(const Ny_Target *target, const Ny_Machine_Function *
 bool x86_lower_machine_mod(const Ny_Target *target, const Ny_Machine_Module *mmod,
                            X86_Module *out_x86_mod, Ny_Diagnostic_List *diags) {
     x86_mod_init(out_x86_mod, mmod->name, target->abi);
+
+    out_x86_mod->global_capacity = mmod->global_count;
+    if (out_x86_mod->global_capacity > 0) {
+        out_x86_mod->globals = (Ny_Machine_Global *)ny_alloc_zero(out_x86_mod->global_capacity * sizeof(Ny_Machine_Global));
+        for (size_t g = 0; g < mmod->global_count; g++) {
+            const Ny_Machine_Global *mg = &mmod->globals[g];
+            Ny_Machine_Global *dst = &out_x86_mod->globals[g];
+            dst->name = mg->name;
+            dst->kind = mg->kind;
+            dst->align = mg->align;
+            dst->data_size = mg->data_size;
+            if (mg->data && mg->data_size > 0) {
+                dst->data = (uint8_t *)ny_alloc(mg->data_size);
+                memcpy(dst->data, mg->data, mg->data_size);
+            }
+            out_x86_mod->global_count++;
+        }
+    }
+
     out_x86_mod->function_capacity = mmod->function_count;
     if (out_x86_mod->function_capacity > 0) {
         out_x86_mod->functions = (X86_Function *)ny_alloc_zero(out_x86_mod->function_capacity * sizeof(X86_Function));

@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/target_x86_64.h"
 #include <stdio.h>
@@ -176,6 +176,15 @@ void x86_mod_destroy(X86_Module *mod) {
     if (mod->functions) {
         ny_free(mod->functions, mod->function_capacity * sizeof(X86_Function));
         mod->functions = NULL;
+    }
+    for (size_t i = 0; i < mod->global_count; i++) {
+        if (mod->globals[i].data) {
+            ny_free(mod->globals[i].data, mod->globals[i].data_size);
+        }
+    }
+    if (mod->globals) {
+        ny_free(mod->globals, mod->global_capacity * sizeof(Ny_Machine_Global));
+        mod->globals = NULL;
     }
     memset(mod, 0, sizeof(*mod));
 }

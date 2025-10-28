@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/x86_encode.h"
 #include "nybit/ir.h"
@@ -64,12 +64,19 @@ void x86_encoded_mod_init(X86_Encoded_Module *emod, Ny_String name) {
     memset(emod, 0, sizeof(*emod));
     emod->name = name;
     x86_buf_init(&emod->text_section);
+    x86_buf_init(&emod->rodata_section);
+    x86_buf_init(&emod->data_section);
 }
 
 void x86_encoded_mod_destroy(X86_Encoded_Module *emod) {
     x86_buf_destroy(&emod->text_section);
+    x86_buf_destroy(&emod->rodata_section);
+    x86_buf_destroy(&emod->data_section);
     if (emod->functions) {
         ny_free(emod->functions, emod->function_capacity * sizeof(X86_Function_Code));
+    }
+    if (emod->globals) {
+        ny_free(emod->globals, emod->global_capacity * sizeof(X86_Encoded_Global));
     }
     memset(emod, 0, sizeof(*emod));
 }
@@ -731,6 +738,48 @@ bool x86_encode_module(X86_Encoded_Module *out_mod, const X86_Module *mod, Ny_Di
                 };
                 x86_buf_append_reloc(&out_mod->text_section, reloc);
             }
+        }
+    }
+
+    /* Encode Globals */
+    out_mod->global_capacity = mod->global_count;
+    if (out_mod->global_capacity > 0) {
+        out_mod->globals = (X86_Encoded_Global *)ny_alloc_zero(out_mod->global_capacity * sizeof(X86_Encoded_Global));
+    }
+
+    for (size_t g = 0; g < mod->global_count; g++) {
+        const Ny_Machine_Global *mg = &mod->globals[g];
+        X86_Encoded_Global *eg = &out_mod->globals[out_mod->global_count++];
+        eg->name = mg->name;
+        eg->kind = mg->kind;
+        eg->align = mg->align > 0 ? mg->align : 1;
+        eg->size = mg->data_size;
+
+        if (mg->kind == NY_GLOBAL_CONST) {
+            while ((out_mod->rodata_section.count % eg->align) != 0) {
+                x86_buf_append_byte(&out_mod->rodata_section, 0);
+            }
+            eg->offset = out_mod->rodata_section.count;
+            if (mg->data && mg->data_size > 0) {
+                x86_buf_append_bytes(&out_mod->rodata_section, mg->data, mg->data_size);
+            }
+        } else if (mg->kind == NY_GLOBAL_DATA) {
+            while ((out_mod->data_section.count % eg->align) != 0) {
+                x86_buf_append_byte(&out_mod->data_section, 0);
+            }
+            eg->offset = out_mod->data_section.count;
+            if (mg->data && mg->data_size > 0) {
+                x86_buf_append_bytes(&out_mod->data_section, mg->data, mg->data_size);
+            }
+        } else if (mg->kind == NY_GLOBAL_BSS) {
+            if (eg->align > out_mod->bss_align) {
+                out_mod->bss_align = eg->align;
+            }
+            while ((out_mod->bss_size % eg->align) != 0) {
+                out_mod->bss_size++;
+            }
+            eg->offset = out_mod->bss_size;
+            out_mod->bss_size += eg->size;
         }
     }
 

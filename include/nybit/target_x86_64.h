@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #ifndef NYBIT_TARGET_X86_64_H
 #define NYBIT_TARGET_X86_64_H
@@ -211,6 +211,9 @@ typedef struct X86_Module {
     X86_Function *functions;
     size_t function_count;
     size_t function_capacity;
+    Ny_Machine_Global *globals;
+    size_t global_count;
+    size_t global_capacity;
 } X86_Module;
 
 void x86_func_init(X86_Function *fn, Ny_String name, Ny_Target_ABI abi);

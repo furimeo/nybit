@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #ifndef NYBIT_MACHINE_H
 #define NYBIT_MACHINE_H
@@ -58,6 +58,7 @@ typedef struct Ny_Machine_Mem_Op {
     int32_t disp;
     Ny_Slot_ID stack_slot;
     Ny_Symbol_ID symbol;
+    Ny_String symbol_name;
 } Ny_Machine_Mem_Op;
 
 /* Condition Codes */
@@ -319,6 +320,16 @@ Ny_Inst_ID ny_mfunc_insert_after(Ny_Machine_Function *fn, Ny_Inst_ID after_inst_
 Ny_Machine_Instruction *ny_mfunc_get_inst(const Ny_Machine_Function *fn, Ny_Inst_ID id);
 Ny_Machine_Operand *ny_mfunc_get_operands(const Ny_Machine_Function *fn, const Ny_Machine_Instruction *inst);
 
+/* Machine Global */
+
+typedef struct Ny_Machine_Global {
+    Ny_String name;
+    Ny_Global_Kind kind;
+    uint32_t align;
+    uint8_t *data;
+    size_t data_size;
+} Ny_Machine_Global;
+
 /* Machine Module */
 
 typedef struct Ny_Machine_Module {
@@ -326,12 +337,16 @@ typedef struct Ny_Machine_Module {
     Ny_Machine_Function *functions;
     size_t function_count;
     size_t function_capacity;
+    Ny_Machine_Global *globals;
+    size_t global_count;
+    size_t global_capacity;
 } Ny_Machine_Module;
 
 void ny_mmod_init(Ny_Machine_Module *mod, Ny_String name);
 void ny_mmod_destroy(Ny_Machine_Module *mod);
 Ny_Machine_Function *ny_mmod_create_function(Ny_Machine_Module *mod, Ny_String name, Ny_Type_ID ret_type, uint8_t call_conv);
 Ny_Machine_Function *ny_mmod_get_function(const Ny_Machine_Module *mod, Ny_Function_ID id);
+void ny_mmod_add_global(Ny_Machine_Module *mod, Ny_String name, Ny_Global_Kind kind, uint32_t align, const void *data, size_t data_size);
 
 /* Lowering */
 

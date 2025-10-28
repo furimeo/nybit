@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #ifndef NYBIT_TARGET_X86_64_ENCODE_H
 #define NYBIT_TARGET_X86_64_ENCODE_H
@@ -66,12 +66,29 @@ typedef struct X86_Function_Code {
     size_t size;
 } X86_Function_Code;
 
+typedef struct X86_Encoded_Global {
+    Ny_String name;
+    Ny_Global_Kind kind;
+    uint32_t align;
+    size_t offset;
+    size_t size;
+} X86_Encoded_Global;
+
 typedef struct X86_Encoded_Module {
     Ny_String name;
     X86_Code_Buffer text_section;
+    X86_Code_Buffer rodata_section;
+    X86_Code_Buffer data_section;
+    size_t bss_size;
+    uint32_t bss_align;
+
     X86_Function_Code *functions;
     size_t function_count;
     size_t function_capacity;
+
+    X86_Encoded_Global *globals;
+    size_t global_count;
+    size_t global_capacity;
 } X86_Encoded_Module;
 
 void x86_encoded_mod_init(X86_Encoded_Module *emod, Ny_String name);

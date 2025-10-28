@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/ir.h"
 #include <stdio.h>
@@ -89,6 +89,15 @@ static void dump_operand(Str_Builder *sb, const Ny_Module *mod, const Ny_Functio
         }
         break;
     }
+    case NY_OP_GLOBAL: {
+        Ny_Global *g = ny_module_get_global((Ny_Module *)mod, op.global_id);
+        if (g && g->name.len > 0) {
+            sb_printf(sb, "@%.*s", (int)g->name.len, g->name.data);
+        } else {
+            sb_printf(sb, "@global_%u", (unsigned)op.global_id);
+        }
+        break;
+    }
     case NY_OP_SYMBOL:
         sb_printf(sb, "@sym_%u", (unsigned)op.sym_id);
         break;
@@ -160,6 +169,40 @@ static void dump_function(Str_Builder *sb, const Ny_Module *mod, const Ny_Functi
 char *ny_dump_module(const Ny_Module *mod, Ny_Arena *scratch) {
     Str_Builder sb;
     sb_init(&sb, scratch);
+
+    for (size_t g = 0; g < mod->global_count; g++) {
+        const Ny_Global *glob = &mod->globals[g];
+        if (glob->kind == NY_GLOBAL_CONST) {
+            sb_append(&sb, "@global @readonly ");
+        } else {
+            sb_append(&sb, "@global ");
+        }
+        sb_printf(&sb, "@%.*s: %s", (int)glob->name.len, glob->name.data, ny_type_name(&mod->types, glob->type));
+        if (glob->kind != NY_GLOBAL_BSS && glob->init_bytes && glob->init_size > 0) {
+            sb_append(&sb, " = ");
+            if (glob->init_size == 1) {
+                sb_printf(&sb, "%d", *(const int8_t *)glob->init_bytes);
+            } else if (glob->init_size == 2) {
+                sb_printf(&sb, "%d", *(const int16_t *)glob->init_bytes);
+            } else if (glob->init_size == 4) {
+                sb_printf(&sb, "%d", *(const int32_t *)glob->init_bytes);
+            } else if (glob->init_size == 8) {
+                sb_printf(&sb, "%lld", *(const long long *)glob->init_bytes);
+            } else {
+                sb_append(&sb, "[");
+                for (size_t b = 0; b < glob->init_size; b++) {
+                    if (b > 0) sb_append(&sb, ", ");
+                    sb_printf(&sb, "%u", glob->init_bytes[b]);
+                }
+                sb_append(&sb, "]");
+            }
+        }
+        sb_append(&sb, ";\n");
+    }
+
+    if (mod->global_count > 0 && mod->function_count > 0) {
+        sb_append(&sb, "\n");
+    }
 
     for (size_t i = 0; i < mod->function_count; i++) {
         if (i > 0) sb_append(&sb, "\n");

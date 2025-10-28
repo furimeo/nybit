@@ -849,3 +849,175 @@ void test_object_e2e_linker_diagnostics(void) {
 
     remove(obj_path);
 }
+
+void test_object_globals_rodata_data_bss(void) {
+    const char *src =
+        "@global @readonly @k_const: i32 = 42;\n"
+        "@global @k_val: i32 = 100;\n"
+        "@global @k_zero: i32;\n"
+        "\n"
+        "@function get_const() -> i32;\n"
+        ".entry;\n"
+        "    %ptr = global_addr @k_const;\n"
+        "    %val = load %ptr;\n"
+        "    @return %val;\n"
+        ";;\n"
+        "\n"
+        "@function read_write_globals() -> i32;\n"
+        ".entry;\n"
+        "    %p_val = global_addr @k_val;\n"
+        "    %v = load %p_val;\n"
+        "    %p_zero = global_addr @k_zero;\n"
+        "    store %p_zero, %v;\n"
+        "    %res = load %p_zero;\n"
+        "    @return %res;\n"
+        ";;\n";
+
+    Ny_Context ctx;
+    ny_context_init(&ctx, "test_globals_emit");
+
+    Ny_Parser parser;
+    ny_parser_init(&parser, &ctx.module, src, strlen(src), &ctx.arena);
+    TEST_ASSERT(ny_parse_module(&parser));
+    ny_parser_destroy(&parser);
+
+    Ny_Diagnostic_List val_diags;
+    ny_diagnostic_list_init(&val_diags);
+    TEST_ASSERT(ny_validate_module(&ctx.module, &val_diags));
+    ny_diagnostic_list_destroy(&val_diags);
+
+    const Ny_Target *tgt_sysv = ny_target_find("x86_64-sysv");
+    const Ny_Target *tgt_win = ny_target_find("x86_64-windows");
+
+    /* SysV ELF */
+    Ny_Machine_Module mmod_elf;
+    Ny_Diagnostic_List mdiags;
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(ny_ir_lower_to_mir(&ctx.module, &mmod_elf, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+
+    for (size_t f = 0; f < mmod_elf.function_count; f++) {
+        Ny_Diagnostic_List rdiags;
+        ny_diagnostic_list_init(&rdiags);
+        TEST_ASSERT(ny_regalloc_run(&mmod_elf.functions[f], tgt_sysv->abi, nullptr, &rdiags));
+        ny_diagnostic_list_destroy(&rdiags);
+    }
+    X86_Module xmod_elf;
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(x86_lower_machine_mod(tgt_sysv, &mmod_elf, &xmod_elf, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+    X86_Encoded_Module emod_elf;
+    ny_diagnostic_list_init(&mdiags);
+    bool enc_ok = x86_encode_module(&emod_elf, &xmod_elf, &mdiags);
+    if (!enc_ok) {
+        for (size_t d = 0; d < mdiags.count; d++) {
+            fprintf(stderr, "x86_encode error: %s\n", mdiags.items[d].message);
+        }
+    }
+    TEST_ASSERT(enc_ok);
+    ny_diagnostic_list_destroy(&mdiags);
+
+    TEST_ASSERT_EQ(emod_elf.rodata_section.count, 4);
+    TEST_ASSERT_EQ(emod_elf.data_section.count, 4);
+    TEST_ASSERT_EQ(emod_elf.bss_size, 4);
+
+    Ny_Object_Buffer elf_buf;
+    ny_obj_buf_init(&elf_buf);
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(ny_emit_object_module(&elf_buf, tgt_sysv, &emod_elf, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+
+    /* Verify ELF section header count: null, .text, .rodata, .data, .bss, .rela.text, .symtab, .strtab, .shstrtab = 9 */
+    const Elf64_Test_Ehdr *ehdr = (const Elf64_Test_Ehdr *)elf_buf.bytes;
+    TEST_ASSERT_EQ(ehdr->e_shnum, 9);
+
+    ny_obj_buf_destroy(&elf_buf);
+    x86_encoded_mod_destroy(&emod_elf);
+    x86_mod_destroy(&xmod_elf);
+    ny_mmod_destroy(&mmod_elf);
+
+    /* Windows COFF */
+    Ny_Machine_Module mmod_coff;
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(ny_ir_lower_to_mir(&ctx.module, &mmod_coff, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+
+    for (size_t f = 0; f < mmod_coff.function_count; f++) {
+        Ny_Diagnostic_List rdiags;
+        ny_diagnostic_list_init(&rdiags);
+        TEST_ASSERT(ny_regalloc_run(&mmod_coff.functions[f], tgt_win->abi, nullptr, &rdiags));
+        ny_diagnostic_list_destroy(&rdiags);
+    }
+    X86_Module xmod_coff;
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(x86_lower_machine_mod(tgt_win, &mmod_coff, &xmod_coff, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+    X86_Encoded_Module emod_coff;
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(x86_encode_module(&emod_coff, &xmod_coff, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+
+    Ny_Object_Buffer coff_buf;
+    ny_obj_buf_init(&coff_buf);
+    ny_diagnostic_list_init(&mdiags);
+    TEST_ASSERT(ny_emit_object_module(&coff_buf, tgt_win, &emod_coff, &mdiags));
+    ny_diagnostic_list_destroy(&mdiags);
+
+    const Coff_Test_File_Header *fhdr = (const Coff_Test_File_Header *)coff_buf.bytes;
+    TEST_ASSERT_EQ(fhdr->NumberOfSections, 4); /* .text, .rdata, .data, .bss */
+    TEST_ASSERT_EQ(fhdr->NumberOfSymbols, 5);  /* 2 functions + 3 globals */
+
+    ny_obj_buf_destroy(&coff_buf);
+    x86_encoded_mod_destroy(&emod_coff);
+    x86_mod_destroy(&xmod_coff);
+    ny_mmod_destroy(&mmod_coff);
+
+    ny_context_destroy(&ctx);
+}
+
+void test_object_e2e_globals_execution(void) {
+    const char *src =
+        "@global @readonly @k_base: i32 = 20;\n"
+        "@global @g_accum: i32 = 12;\n"
+        "@global @g_temp: i32;\n"
+        "\n"
+        "@function compute_globals() -> i32;\n"
+        ".entry;\n"
+        "    %p_base = global_addr @k_base;\n"
+        "    %base = load %p_base;\n"
+        "    %p_accum = global_addr @g_accum;\n"
+        "    %accum = load %p_accum;\n"
+        "    %sum = add %base, %accum;\n"
+        "    %c10 = const 10;\n"
+        "    %total = add %sum, %c10;\n"
+        "    %p_temp = global_addr @g_temp;\n"
+        "    store %p_temp, %total;\n"
+        "    %res = load %p_temp;\n"
+        "    @return %res;\n"
+        ";;\n"
+        "\n"
+        "@function main() -> i32;\n"
+        ".entry;\n"
+        "    %res = call @compute_globals;\n"
+        "    @return %res;\n"
+        ";;\n";
+
+    const Ny_Target *target = ny_target_get_default();
+    const char *obj_path = "bin/test_e2e_globals.obj";
+    const char *exe_path = "bin/test_e2e_globals.exe";
+
+    TEST_ASSERT(compile_source_to_obj(src, obj_path, target));
+
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    bool link_ok = ny_link_executable(obj_path, exe_path, target, &diags);
+    TEST_ASSERT(link_ok);
+    ny_diagnostic_list_destroy(&diags);
+
+    int exit_code = system("bin\\test_e2e_globals.exe");
+    TEST_ASSERT_EQ(exit_code, 42);
+
+    remove(obj_path);
+    remove(exe_path);
+}
+

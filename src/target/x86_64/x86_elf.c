@@ -29,6 +29,7 @@
 #define STB_GLOBAL 1
 
 #define STT_NOTYPE 0
+#define STT_OBJECT 1
 #define STT_FUNC 2
 #define STT_SECTION 3
 
@@ -163,7 +164,36 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
     Elf64_Sym null_sym = {0};
     ny_obj_buf_append_bytes(&symtab_buf, &null_sym, sizeof(null_sym));
 
+    /* Check if .rodata, .data, .bss sections are present */
+    bool has_rodata = emod->rodata_section.count > 0;
+    bool has_data = emod->data_section.count > 0;
+    bool has_bss = emod->bss_size > 0;
+    bool has_rela = (emod->text_section.reloc_count > 0);
+
+    /* Build Section Indices:
+       0: NULL
+       text_shndx: .text (always 1)
+       rela_shndx: .rela.text (if has_rela)
+       rodata_shndx: .rodata (if has_rodata)
+       data_shndx: .data (if has_data)
+       bss_shndx: .bss (if has_bss)
+       symtab_shndx: .symtab
+       strtab_shndx: .strtab
+       shstrtab_shndx: .shstrtab
+    */
     uint16_t text_shndx = 1;
+    uint16_t next_shndx = 2;
+
+    uint16_t rela_shndx = has_rela ? next_shndx++ : 0;
+    uint16_t rodata_shndx = has_rodata ? next_shndx++ : 0;
+    uint16_t data_shndx = has_data ? next_shndx++ : 0;
+    uint16_t bss_shndx = has_bss ? next_shndx++ : 0;
+    uint16_t symtab_shndx = next_shndx++;
+    uint16_t strtab_shndx = next_shndx++;
+    uint16_t shstrtab_shndx = next_shndx++;
+    uint16_t total_sections = next_shndx;
+
+    /* Build section symbols (STB_LOCAL, STT_SECTION) */
     Elf64_Sym sec_sym = {
         .st_name = 0,
         .st_info = ELF64_ST_INFO(STB_LOCAL, STT_SECTION),
@@ -175,6 +205,7 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
     ny_obj_buf_append_bytes(&symtab_buf, &sec_sym, sizeof(sec_sym));
     uint32_t first_global_idx = 2;
 
+    /* Function Symbols */
     for (size_t i = 0; i < emod->function_count; i++) {
         const X86_Function_Code *fn = &emod->functions[i];
         uint32_t name_off = elf_add_string(&strtab_buf, fn->name);
@@ -189,6 +220,27 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
         ny_obj_buf_append_bytes(&symtab_buf, &sym, sizeof(sym));
     }
 
+    /* Global Variable Symbols */
+    for (size_t g = 0; g < emod->global_count; g++) {
+        const X86_Encoded_Global *eg = &emod->globals[g];
+        uint32_t name_off = elf_add_string(&strtab_buf, eg->name);
+        uint16_t sec_ndx = 0;
+        if (eg->kind == NY_GLOBAL_CONST) sec_ndx = rodata_shndx;
+        else if (eg->kind == NY_GLOBAL_DATA) sec_ndx = data_shndx;
+        else if (eg->kind == NY_GLOBAL_BSS) sec_ndx = bss_shndx;
+
+        Elf64_Sym sym = {
+            .st_name = name_off,
+            .st_info = ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT),
+            .st_other = 0,
+            .st_shndx = sec_ndx,
+            .st_value = eg->offset,
+            .st_size = eg->size,
+        };
+        ny_obj_buf_append_bytes(&symtab_buf, &sym, sizeof(sym));
+    }
+
+    /* Relocations */
     size_t reloc_count = emod->text_section.reloc_count;
     for (size_t r = 0; r < reloc_count; r++) {
         const X86_Relocation *reloc = &emod->text_section.relocs[r];
@@ -227,18 +279,14 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
         ny_obj_buf_append_bytes(&rela_buf, &rela, sizeof(rela));
     }
 
-    bool has_rela = (reloc_count > 0);
     uint32_t str_text = elf_add_cstr(&shstrtab_buf, ".text");
     uint32_t str_rela_text = has_rela ? elf_add_cstr(&shstrtab_buf, ".rela.text") : 0;
+    uint32_t str_rodata = has_rodata ? elf_add_cstr(&shstrtab_buf, ".rodata") : 0;
+    uint32_t str_data = has_data ? elf_add_cstr(&shstrtab_buf, ".data") : 0;
+    uint32_t str_bss = has_bss ? elf_add_cstr(&shstrtab_buf, ".bss") : 0;
     uint32_t str_symtab = elf_add_cstr(&shstrtab_buf, ".symtab");
     uint32_t str_strtab = elf_add_cstr(&shstrtab_buf, ".strtab");
     uint32_t str_shstrtab = elf_add_cstr(&shstrtab_buf, ".shstrtab");
-
-    uint16_t rela_shndx = has_rela ? 2 : 0;
-    uint16_t symtab_shndx = has_rela ? 3 : 2;
-    uint16_t strtab_shndx = has_rela ? 4 : 3;
-    uint16_t shstrtab_shndx = has_rela ? 5 : 4;
-    uint16_t total_sections = has_rela ? 6 : 5;
 
     Elf64_Ehdr ehdr = {
         .e_ident = {
@@ -260,7 +308,6 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
         .e_shnum = total_sections,
         .e_shstrndx = shstrtab_shndx,
     };
-
     ny_obj_buf_append_bytes(out_buf, &ehdr, sizeof(ehdr));
 
     ny_obj_buf_align_to(out_buf, 16);
@@ -278,6 +325,25 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
         rela_size = rela_buf.count;
         ny_obj_buf_append_bytes(out_buf, rela_buf.bytes, rela_size);
     }
+
+    uint64_t rodata_offset = 0;
+    uint64_t rodata_size = emod->rodata_section.count;
+    if (has_rodata) {
+        ny_obj_buf_align_to(out_buf, 16);
+        rodata_offset = out_buf->count;
+        ny_obj_buf_append_bytes(out_buf, emod->rodata_section.bytes, rodata_size);
+    }
+
+    uint64_t data_offset = 0;
+    uint64_t data_size = emod->data_section.count;
+    if (has_data) {
+        ny_obj_buf_align_to(out_buf, 16);
+        data_offset = out_buf->count;
+        ny_obj_buf_append_bytes(out_buf, emod->data_section.bytes, data_size);
+    }
+
+    uint64_t bss_offset = out_buf->count;
+    uint64_t bss_size = emod->bss_size;
 
     ny_obj_buf_align_to(out_buf, 8);
     uint64_t symtab_offset = out_buf->count;
@@ -298,8 +364,7 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
     uint64_t shoff = out_buf->count;
     ((Elf64_Ehdr *)out_buf->bytes)->e_shoff = shoff;
 
-    Elf64_Shdr shdrs[6];
-    memset(shdrs, 0, sizeof(shdrs));
+    Elf64_Shdr *shdrs = (Elf64_Shdr *)ny_alloc_zero(sizeof(Elf64_Shdr) * total_sections);
 
     shdrs[0] = (Elf64_Shdr){0};
 
@@ -328,6 +393,51 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
             .sh_info = text_shndx,
             .sh_addralign = 8,
             .sh_entsize = sizeof(Elf64_Rela),
+        };
+    }
+
+    if (has_rodata) {
+        shdrs[rodata_shndx] = (Elf64_Shdr){
+            .sh_name = str_rodata,
+            .sh_type = SHT_PROGBITS,
+            .sh_flags = SHF_ALLOC,
+            .sh_addr = 0,
+            .sh_offset = rodata_offset,
+            .sh_size = rodata_size,
+            .sh_link = 0,
+            .sh_info = 0,
+            .sh_addralign = 16,
+            .sh_entsize = 0,
+        };
+    }
+
+    if (has_data) {
+        shdrs[data_shndx] = (Elf64_Shdr){
+            .sh_name = str_data,
+            .sh_type = SHT_PROGBITS,
+            .sh_flags = SHF_ALLOC | SHF_WRITE,
+            .sh_addr = 0,
+            .sh_offset = data_offset,
+            .sh_size = data_size,
+            .sh_link = 0,
+            .sh_info = 0,
+            .sh_addralign = 16,
+            .sh_entsize = 0,
+        };
+    }
+
+    if (has_bss) {
+        shdrs[bss_shndx] = (Elf64_Shdr){
+            .sh_name = str_bss,
+            .sh_type = 8, /* SHT_NOBITS */
+            .sh_flags = SHF_ALLOC | SHF_WRITE,
+            .sh_addr = 0,
+            .sh_offset = bss_offset,
+            .sh_size = bss_size,
+            .sh_link = 0,
+            .sh_info = 0,
+            .sh_addralign = emod->bss_align > 0 ? emod->bss_align : 16,
+            .sh_entsize = 0,
         };
     }
 
@@ -371,6 +481,7 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
     };
 
     ny_obj_buf_append_bytes(out_buf, shdrs, sizeof(Elf64_Shdr) * total_sections);
+    ny_free(shdrs, sizeof(Elf64_Shdr) * total_sections);
 
     ny_obj_buf_destroy(&symtab_buf);
     ny_obj_buf_destroy(&strtab_buf);

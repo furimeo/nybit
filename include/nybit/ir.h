@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #ifndef NYBIT_IR_H
 #define NYBIT_IR_H
@@ -84,6 +84,7 @@ typedef enum Ny_Operand_Kind {
     NY_OP_IMM_FLOAT,
     NY_OP_FUNCTION,
     NY_OP_SYMBOL,
+    NY_OP_GLOBAL,
     NY_OP_TYPE,
 } Ny_Operand_Kind;
 
@@ -96,6 +97,7 @@ typedef struct Ny_Operand {
         double imm_float;
         Ny_Function_ID fn_id;
         Ny_Symbol_ID sym_id;
+        Ny_Global_ID global_id;
         Ny_Type_ID type_id;
     };
 } Ny_Operand;
@@ -139,6 +141,13 @@ static inline Ny_Operand ny_operand_symbol(Ny_Symbol_ID sym_id) {
     Ny_Operand op;
     op.kind = NY_OP_SYMBOL;
     op.sym_id = sym_id;
+    return op;
+}
+
+static inline Ny_Operand ny_operand_global(Ny_Global_ID global_id) {
+    Ny_Operand op;
+    op.kind = NY_OP_GLOBAL;
+    op.global_id = global_id;
     return op;
 }
 
@@ -197,6 +206,7 @@ typedef enum Ny_Opcode {
     NY_OPCODE_SELECT,
     NY_OPCODE_ADDR,
     NY_OPCODE_ADDR_OFFSET,
+    NY_OPCODE_GLOBAL_ADDR,
     NY_OPCODE_LOAD,
     NY_OPCODE_STORE,
     NY_OPCODE_STACK_SLOT,
@@ -339,6 +349,24 @@ bool ny_function_split_block(Ny_Function *fn, Ny_Block_ID block_id, Ny_Inst_ID s
 bool ny_function_merge_blocks(Ny_Function *fn, Ny_Block_ID first_id, Ny_Block_ID second_id);
 void ny_function_remove_phi_incoming(Ny_Function *fn, Ny_Block_ID blk_id, Ny_Block_ID pred_id);
 
+/* Globals */
+
+typedef enum Ny_Global_Kind {
+    NY_GLOBAL_CONST = 0,
+    NY_GLOBAL_DATA,
+    NY_GLOBAL_BSS,
+} Ny_Global_Kind;
+
+typedef struct Ny_Global {
+    Ny_Global_ID id;
+    Ny_String name;
+    Ny_Type_ID type;
+    Ny_Global_Kind kind;
+    uint32_t align;
+    uint8_t *init_bytes;
+    size_t init_size;
+} Ny_Global;
+
 /* Module & Context */
 
 typedef struct Ny_Module {
@@ -347,6 +375,9 @@ typedef struct Ny_Module {
     Ny_Function *functions;
     size_t function_count;
     size_t function_capacity;
+    Ny_Global *globals;
+    size_t global_count;
+    size_t global_capacity;
 } Ny_Module;
 
 typedef struct Ny_Context {
@@ -362,6 +393,10 @@ void ny_module_destroy(Ny_Module *mod);
 Ny_Function_ID ny_module_create_function(Ny_Module *mod, Ny_String name, Ny_Type_ID ret_type, uint8_t call_conv);
 Ny_Function *ny_module_get_function(Ny_Module *mod, Ny_Function_ID id);
 Ny_Function *ny_module_get_function_by_name(Ny_Module *mod, const char *name);
+
+Ny_Global_ID ny_module_create_global(Ny_Module *mod, Ny_String name, Ny_Type_ID type, Ny_Global_Kind kind, uint32_t align, const void *init_bytes, size_t init_size);
+Ny_Global *ny_module_get_global(Ny_Module *mod, Ny_Global_ID id);
+Ny_Global *ny_module_get_global_by_name(Ny_Module *mod, const char *name);
 
 /* Builder */
 

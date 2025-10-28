@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #ifndef NYBIT_SUPPORT_H
 #define NYBIT_SUPPORT_H
@@ -15,6 +15,7 @@ typedef uint32_t Ny_Inst_ID;
 typedef uint32_t Ny_Block_ID;
 typedef uint32_t Ny_Function_ID;
 typedef uint32_t Ny_Symbol_ID;
+typedef uint32_t Ny_Global_ID;
 typedef uint32_t Ny_Type_ID;
 typedef uint32_t Ny_Reg_ID;
 typedef uint32_t Ny_Slot_ID;
@@ -24,6 +25,7 @@ typedef uint32_t Ny_Slot_ID;
 #define NY_INVALID_BLOCK    UINT32_MAX
 #define NY_INVALID_FUNCTION UINT32_MAX
 #define NY_INVALID_SYMBOL   UINT32_MAX
+#define NY_INVALID_GLOBAL   UINT32_MAX
 #define NY_INVALID_TYPE     UINT32_MAX
 #define NY_INVALID_REG      UINT32_MAX
 #define NY_INVALID_SLOT     UINT32_MAX

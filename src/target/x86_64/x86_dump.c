@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/target_x86_64.h"
 #include <stdio.h>
@@ -167,7 +167,31 @@ char *x86_dump_func(const void *target_fn, Ny_Arena *scratch) {
 char *x86_dump_mod(const X86_Module *mod, Ny_Arena *scratch) {
     Str_Builder sb;
     sb_init(&sb, scratch);
-    sb_append(&sb, ".intel_syntax noprefix\n.text\n");
+    sb_append(&sb, ".intel_syntax noprefix\n");
+
+    for (size_t g = 0; g < mod->global_count; g++) {
+        const Ny_Machine_Global *mg = &mod->globals[g];
+        if (mg->kind == NY_GLOBAL_CONST) {
+            sb_append(&sb, ".section .rodata\n");
+        } else if (mg->kind == NY_GLOBAL_DATA) {
+            sb_append(&sb, ".data\n");
+        } else if (mg->kind == NY_GLOBAL_BSS) {
+            sb_append(&sb, ".bss\n");
+        }
+        sb_printf(&sb, ".globl %.*s\n", (int)mg->name.len, mg->name.data);
+        sb_printf(&sb, ".align %u\n", (unsigned)mg->align);
+        sb_printf(&sb, "%.*s:\n", (int)mg->name.len, mg->name.data);
+        if (mg->kind == NY_GLOBAL_BSS) {
+            sb_printf(&sb, "    .zero %zu\n\n", mg->data_size);
+        } else {
+            for (size_t b = 0; b < mg->data_size; b++) {
+                sb_printf(&sb, "    .byte %u\n", (unsigned)mg->data[b]);
+            }
+            sb_append(&sb, "\n");
+        }
+    }
+
+    sb_append(&sb, ".text\n");
 
     for (size_t i = 0; i < mod->function_count; i++) {
         if (i > 0) sb_append(&sb, "\n");

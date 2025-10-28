@@ -98,6 +98,11 @@ static Ny_Machine_Operand lower_operand(const Ny_Module *mod, const Ny_Function 
         Ny_String name = tgt ? tgt->name : ny_str("");
         return ny_mop_symbol(name, op.fn_id);
     }
+    case NY_OP_GLOBAL: {
+        Ny_Global *g = ny_module_get_global((Ny_Module *)mod, op.global_id);
+        Ny_String name = g ? g->name : ny_str("");
+        return ny_mop_symbol(name, op.global_id);
+    }
     case NY_OP_SYMBOL:
         return ny_mop_symbol(ny_str(""), op.sym_id);
     case NY_OP_TYPE:
@@ -324,6 +329,25 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
                 ny_mfunc_append_inst(mfn, mb, NY_MOPC_LEA, def_reg, &mop, 1, 0);
                 break;
             }
+            case NY_OPCODE_GLOBAL_ADDR: {
+                Ny_Machine_Mem_Op mem;
+                memset(&mem, 0, sizeof(mem));
+                mem.stack_slot = NY_INVALID_SLOT;
+                if (ops[0].kind == NY_OP_GLOBAL) {
+                    Ny_Global *g = ny_module_get_global((Ny_Module *)ir_mod, ops[0].global_id);
+                    if (g) {
+                        mem.symbol = g->id;
+                        mem.symbol_name = g->name;
+                    } else {
+                        mem.symbol = NY_INVALID_GLOBAL;
+                    }
+                } else if (ops[0].kind == NY_OP_SYMBOL) {
+                    mem.symbol = ops[0].sym_id;
+                }
+                Ny_Machine_Operand mop = ny_mop_mem(mem);
+                ny_mfunc_append_inst(mfn, mb, NY_MOPC_LEA, def_reg, &mop, 1, 0);
+                break;
+            }
             case NY_OPCODE_STACK_SLOT: {
                 uint32_t size = (uint32_t)ops[0].imm_int;
                 uint32_t align = (uint32_t)ops[1].imm_int;
@@ -380,6 +404,11 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
 
 bool ny_ir_lower_to_mir(const Ny_Module *ir_mod, Ny_Machine_Module *out_mmod, Ny_Diagnostic_List *diags) {
     ny_mmod_init(out_mmod, ir_mod->name);
+
+    for (size_t g = 0; g < ir_mod->global_count; g++) {
+        const Ny_Global *glob = &ir_mod->globals[g];
+        ny_mmod_add_global(out_mmod, glob->name, glob->kind, glob->align, glob->init_bytes, glob->init_size);
+    }
 
     for (size_t i = 0; i < ir_mod->function_count; i++) {
         const Ny_Function *fn = &ir_mod->functions[i];

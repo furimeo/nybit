@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/machine.h"
 
@@ -351,6 +351,14 @@ void ny_mmod_destroy(Ny_Machine_Module *mod) {
     if (mod->functions) {
         ny_free(mod->functions, mod->function_capacity * sizeof(Ny_Machine_Function));
     }
+    for (size_t i = 0; i < mod->global_count; i++) {
+        if (mod->globals[i].data) {
+            ny_free(mod->globals[i].data, mod->globals[i].data_size);
+        }
+    }
+    if (mod->globals) {
+        ny_free(mod->globals, mod->global_capacity * sizeof(Ny_Machine_Global));
+    }
     memset(mod, 0, sizeof(Ny_Machine_Module));
 }
 
@@ -365,4 +373,18 @@ Ny_Machine_Function *ny_mmod_create_function(Ny_Machine_Module *mod, Ny_String n
 Ny_Machine_Function *ny_mmod_get_function(const Ny_Machine_Module *mod, Ny_Function_ID id) {
     if (id >= mod->function_count) return nullptr;
     return &mod->functions[id];
+}
+
+void ny_mmod_add_global(Ny_Machine_Module *mod, Ny_String name, Ny_Global_Kind kind, uint32_t align, const void *data, size_t data_size) {
+    ny_buf_grow((void **)&mod->globals, &mod->global_capacity, mod->global_count, sizeof(Ny_Machine_Global));
+    Ny_Machine_Global *g = &mod->globals[mod->global_count++];
+    memset(g, 0, sizeof(*g));
+    g->name = name;
+    g->kind = kind;
+    g->align = align > 0 ? align : 1;
+    g->data_size = data_size;
+    if (data && data_size > 0) {
+        g->data = (uint8_t *)ny_alloc(data_size);
+        memcpy(g->data, data, data_size);
+    }
 }

@@ -131,6 +131,7 @@ static Ny_Opcode lookup_opcode(Ny_String name) {
     if (ny_str_eq_cstr(name, "select"))         return NY_OPCODE_SELECT;
     if (ny_str_eq_cstr(name, "addr"))           return NY_OPCODE_ADDR;
     if (ny_str_eq_cstr(name, "addr_offset"))    return NY_OPCODE_ADDR_OFFSET;
+    if (ny_str_eq_cstr(name, "global_addr"))    return NY_OPCODE_GLOBAL_ADDR;
     if (ny_str_eq_cstr(name, "load"))           return NY_OPCODE_LOAD;
     if (ny_str_eq_cstr(name, "store"))          return NY_OPCODE_STORE;
     if (ny_str_eq_cstr(name, "stack_slot"))     return NY_OPCODE_STACK_SLOT;
@@ -410,12 +411,22 @@ static bool parse_function(Ny_Parser *p) {
                     Ny_String d_name = advance_tok(p).text;
                     char buf[128];
                     snprintf(buf, sizeof(buf), "%.*s", (int)d_name.len, d_name.data);
-                    Ny_Function *tgt = ny_module_get_function_by_name(p->module, buf);
-                    if (!tgt) {
-                        Ny_Function_ID fid = ny_module_create_function(p->module, d_name, NY_TYPE_I32, NY_CC_DEFAULT);
-                        tgt = ny_module_get_function(p->module, fid);
+                    if (op == NY_OPCODE_GLOBAL_ADDR) {
+                        Ny_Global *glob = ny_module_get_global_by_name(p->module, buf);
+                        if (!glob) {
+                            Ny_Global_ID gid = ny_module_create_global(p->module, d_name, NY_TYPE_I32, NY_GLOBAL_DATA, 4, NULL, 4);
+                            glob = ny_module_get_global(p->module, gid);
+                        }
+                        if (op_count < 32) ops_buf[op_count++] = ny_operand_global(glob ? glob->id : NY_INVALID_GLOBAL);
+                        res_type = NY_TYPE_PTR;
+                    } else {
+                        Ny_Function *tgt = ny_module_get_function_by_name(p->module, buf);
+                        if (!tgt) {
+                            Ny_Function_ID fid = ny_module_create_function(p->module, d_name, NY_TYPE_I32, NY_CC_DEFAULT);
+                            tgt = ny_module_get_function(p->module, fid);
+                        }
+                        if (op_count < 32) ops_buf[op_count++] = ny_operand_function(tgt ? tgt->id : NY_INVALID_FUNCTION);
                     }
-                    if (op_count < 32) ops_buf[op_count++] = ny_operand_function(tgt ? tgt->id : NY_INVALID_FUNCTION);
                 } else if (p->curr.kind == NY_TOK_INT) {
                     if (op_count < 32) ops_buf[op_count++] = ny_operand_int(advance_tok(p).int_val);
                 } else if (p->curr.kind == NY_TOK_FLOAT) {
@@ -683,10 +694,97 @@ static bool parse_function(Ny_Parser *p) {
     return true;
 }
 
+static bool parse_global(Ny_Parser *p) {
+    advance_tok(p); /* consume @global */
+
+    bool is_readonly = false;
+    if (p->curr.kind == NY_TOK_DIRECTIVE && ny_str_eq_cstr(p->curr.text, "readonly")) {
+        advance_tok(p);
+        is_readonly = true;
+    }
+
+    Ny_String name = {0};
+    if (p->curr.kind == NY_TOK_DIRECTIVE) {
+        name = advance_tok(p).text;
+    } else if (p->curr.kind == NY_TOK_IDENT) {
+        name = advance_tok(p).text;
+    } else {
+        report_error(p, "expected global name after @global", p->curr.line, p->curr.col);
+        return false;
+    }
+
+    if (!expect_tok(p, NY_TOK_COLON)) {
+        return false;
+    }
+
+    if (p->curr.kind != NY_TOK_IDENT) {
+        report_error(p, "expected type for global", p->curr.line, p->curr.col);
+        return false;
+    }
+    Ny_Token type_tok = advance_tok(p);
+    Ny_Type_ID type = lookup_type(p->module, type_tok.text);
+    if (type == NY_INVALID_TYPE) {
+        report_error(p, "unknown type for global", type_tok.line, type_tok.col);
+        return false;
+    }
+
+    uint32_t type_sz = ny_type_size(&p->module->types, type);
+    if (type_sz == 0) type_sz = 4;
+    uint32_t align = type_sz > 8 ? 8 : type_sz;
+
+    Ny_Global_Kind kind = is_readonly ? NY_GLOBAL_CONST : NY_GLOBAL_DATA;
+    uint8_t init_buf[16] = {0};
+    size_t init_size = type_sz;
+
+    if (p->curr.kind == NY_TOK_EQUAL) {
+        advance_tok(p);
+        if (p->curr.kind == NY_TOK_INT) {
+            int64_t val = advance_tok(p).int_val;
+            memcpy(init_buf, &val, type_sz <= 8 ? type_sz : 8);
+        } else {
+            report_error(p, "expected literal integer for global initializer", p->curr.line, p->curr.col);
+            return false;
+        }
+    } else {
+        kind = NY_GLOBAL_BSS;
+    }
+
+    if (!expect_tok(p, NY_TOK_SEMICOLON)) {
+        return false;
+    }
+
+    /* Check if already defined */
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%.*s", (int)name.len, name.data);
+    Ny_Global *existing = ny_module_get_global_by_name(p->module, buf);
+    if (existing) {
+        existing->type = type;
+        existing->kind = kind;
+        existing->align = align;
+        existing->init_size = init_size;
+        if (existing->init_bytes) {
+            ny_free(existing->init_bytes, existing->init_size);
+            existing->init_bytes = NULL;
+        }
+        if (kind != NY_GLOBAL_BSS) {
+            existing->init_bytes = (uint8_t *)ny_alloc(init_size);
+            memcpy(existing->init_bytes, init_buf, init_size);
+        }
+    } else {
+        ny_module_create_global(p->module, name, type, kind, align, kind != NY_GLOBAL_BSS ? init_buf : NULL, init_size);
+    }
+
+    return true;
+}
+
 bool ny_parse_module(Ny_Parser *p) {
     while (p->curr.kind != NY_TOK_EOF) {
         if (p->curr.kind == NY_TOK_DIRECTIVE && ny_str_eq_cstr(p->curr.text, "function")) {
             if (!parse_function(p)) {
+                return false;
+            }
+        } else if (p->curr.kind == NY_TOK_DIRECTIVE && ny_str_eq_cstr(p->curr.text, "global")) {
+            if (!parse_global(p)) {
                 return false;
             }
         } else if (p->curr.kind == NY_TOK_SEMICOLON) {

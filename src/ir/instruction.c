@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/ir.h"
 
@@ -49,6 +49,7 @@ const char *ny_opcode_name(Ny_Opcode op) {
     case NY_OPCODE_SELECT:         return "select";
     case NY_OPCODE_ADDR:           return "addr";
     case NY_OPCODE_ADDR_OFFSET:    return "addr_offset";
+    case NY_OPCODE_GLOBAL_ADDR:    return "global_addr";
     case NY_OPCODE_LOAD:           return "load";
     case NY_OPCODE_STORE:          return "store";
     case NY_OPCODE_STACK_SLOT:     return "stack_slot";
