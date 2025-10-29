@@ -148,6 +148,9 @@ static void dump_function(Str_Builder *sb, const Ny_Module *mod, const Ny_Functi
         else sb_append(sb, "...");
     }
     sb_printf(sb, ") -> %s;\n", ny_type_name(&mod->types, fn->return_type));
+    if (fn->block_count == 0) {
+        return;
+    }
 
     for (size_t b = 0; b < fn->block_count; b++) {
         const Ny_Block *blk = &fn->blocks[b];

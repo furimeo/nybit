@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "test_framework.h"
 #include "nybit/target.h"
@@ -87,7 +87,7 @@ void test_x86_stack_frame_and_addressing(void) {
     TEST_ASSERT_EQ(frame.slot_count, 2);
     TEST_ASSERT_EQ(frame.slot_offsets[0], -4);
     TEST_ASSERT_EQ(frame.slot_offsets[1], -16);
-    TEST_ASSERT_EQ(frame.stack_size, 16);
+    TEST_ASSERT_EQ(frame.stack_size, 24);
 
     X86_Block blk;
     memset(&blk, 0, sizeof(blk));

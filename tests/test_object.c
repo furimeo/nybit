@@ -1021,3 +1021,128 @@ void test_object_e2e_globals_execution(void) {
     remove(exe_path);
 }
 
+void test_object_e2e_abi_stack_arguments(void) {
+    FILE *fc = fopen("bin/test_e2e_abi_host.c", "w");
+    TEST_ASSERT(fc != nullptr);
+    fputs(
+        "int host_sum8(int a, int b, int c, int d, int e, int f, int g, int h) {\n"
+        "    return a + b + c + d + e + f + g + h;\n"
+        "}\n",
+        fc
+    );
+    fclose(fc);
+
+    int c_build = system("gcc -c bin/test_e2e_abi_host.c -o bin/test_e2e_abi_host.o");
+    TEST_ASSERT_EQ(c_build, 0);
+
+    const char *src =
+        "@function host_sum8(%a: i32, %b: i32, %c: i32, %d: i32, %e: i32, %f: i32, %g: i32, %h: i32) -> i32;\n"
+        "\n"
+        "@function nybit_callee8(%a: i32, %b: i32, %c: i32, %d: i32, %e: i32, %f: i32, %g: i32, %h: i32) -> i32;\n"
+        ".entry;\n"
+        "    %s1 = add %a, %b;\n"
+        "    %s2 = add %s1, %c;\n"
+        "    %s3 = add %s2, %d;\n"
+        "    %s4 = add %s3, %e;\n"
+        "    %s5 = add %s4, %f;\n"
+        "    %s6 = add %s5, %g;\n"
+        "    %s7 = add %s6, %h;\n"
+        "    @return %s7;\n"
+        ";;\n"
+        "\n"
+        "@function main() -> i32;\n"
+        ".entry;\n"
+        "    %c1 = const 1;\n"
+        "    %c2 = const 2;\n"
+        "    %c3 = const 3;\n"
+        "    %c4 = const 4;\n"
+        "    %c5 = const 5;\n"
+        "    %c6 = const 6;\n"
+        "    %c7 = const 7;\n"
+        "    %c8 = const 8;\n"
+        "    %hsum = call @host_sum8, %c1, %c2, %c3, %c4, %c5, %c6, %c7, %c8;\n"
+        "    %nsum = call @nybit_callee8, %c1, %c2, %c3, %c4, %c5, %c6, %c7, %c8;\n"
+        "    %diff = sub %hsum, %nsum;\n"
+        "    %c42 = const 42;\n"
+        "    %res = add %c42, %diff;\n"
+        "    @return %res;\n"
+        ";;\n";
+
+    const Ny_Target *target = ny_target_get_default();
+    const char *ny_obj = "bin/test_e2e_abi_stack.obj";
+    const char *exe_path = "bin/test_e2e_abi_stack.exe";
+
+    TEST_ASSERT(compile_source_to_obj(src, ny_obj, target));
+
+    const char *objs[2] = { ny_obj, "bin/test_e2e_abi_host.o" };
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    bool link_ok = ny_link_executable_with_extra(objs, 2, exe_path, target, &diags);
+    TEST_ASSERT(link_ok);
+    ny_diagnostic_list_destroy(&diags);
+
+    int exit_code = system("bin\\test_e2e_abi_stack.exe");
+    TEST_ASSERT_EQ(exit_code, 42);
+
+    remove("bin/test_e2e_abi_host.c");
+    remove("bin/test_e2e_abi_host.o");
+    remove(ny_obj);
+    remove(exe_path);
+}
+
+void test_object_e2e_abi_scalar_widths(void) {
+    FILE *fc = fopen("bin/test_e2e_widths_host.c", "w");
+    TEST_ASSERT(fc != nullptr);
+    fputs(
+        "#include <stdint.h>\n"
+        "int8_t host_i8(int8_t x) { return (int8_t)(x + 5); }\n"
+        "int16_t host_i16(int16_t x) { return (int16_t)(x + 10); }\n"
+        "int64_t host_i64(int64_t x) { return x + 100; }\n",
+        fc
+    );
+    fclose(fc);
+
+    int c_build = system("gcc -c bin/test_e2e_widths_host.c -o bin/test_e2e_widths_host.o");
+    TEST_ASSERT_EQ(c_build, 0);
+
+    const char *src =
+        "@function host_i8(%x: i8) -> i8;\n"
+        "@function host_i16(%x: i16) -> i16;\n"
+        "@function host_i64(%x: i64) -> i64;\n"
+        "\n"
+        "@function main() -> i32;\n"
+        ".entry;\n"
+        "    %v8 = const 5;\n"
+        "    %r8 = call @host_i8, %v8;\n"
+        "    %v16 = const 10;\n"
+        "    %r16 = call @host_i16, %v16;\n"
+        "    %v64 = const 100;\n"
+        "    %r64 = call @host_i64, %v64;\n"
+        "    %s1 = add %r8, %r16;\n"
+        "    %c12 = const 12;\n"
+        "    %s2 = add %s1, %c12;\n"
+        "    @return %s2;\n"
+        ";;\n";
+
+    const Ny_Target *target = ny_target_get_default();
+    const char *ny_obj = "bin/test_e2e_widths.obj";
+    const char *exe_path = "bin/test_e2e_widths.exe";
+
+    TEST_ASSERT(compile_source_to_obj(src, ny_obj, target));
+
+    const char *objs[2] = { ny_obj, "bin/test_e2e_widths_host.o" };
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    bool link_ok = ny_link_executable_with_extra(objs, 2, exe_path, target, &diags);
+    TEST_ASSERT(link_ok);
+    ny_diagnostic_list_destroy(&diags);
+
+    int exit_code = system("bin\\test_e2e_widths.exe");
+    TEST_ASSERT_EQ(exit_code, 42);
+
+    remove("bin/test_e2e_widths_host.c");
+    remove("bin/test_e2e_widths_host.o");
+    remove(ny_obj);
+    remove(exe_path);
+}
+

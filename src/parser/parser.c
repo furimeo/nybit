@@ -326,6 +326,12 @@ static bool parse_function(Ny_Parser *p) {
         return false;
     }
 
+    if (p->curr.kind == NY_TOK_DIRECTIVE || p->curr.kind == NY_TOK_EOF) {
+        map_free(&val_map);
+        map_free(&blk_map);
+        return true;
+    }
+
     // Default entry block if not explicitly created
     Ny_Block_ID cur_block = get_or_create_block(fn, &blk_map, ny_str("entry"));
     p->builder.cur_block = cur_block;

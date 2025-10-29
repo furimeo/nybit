@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "x86_internal.h"
 
@@ -8,10 +8,22 @@ void x86_frame_layout(X86_Stack_Frame *frame, const Ny_Machine_Function *mfn, Ny
     frame->has_call = false;
     frame->callee_saved_mask = 0;
 
+    size_t abi_arg_reg_count = 0;
+    x86_abi_arg_regs(abi, &abi_arg_reg_count);
+
+    size_t max_outgoing_stack_args = 0;
+
     for (size_t i = 0; i < mfn->inst_count; i++) {
         const Ny_Machine_Instruction *inst = &mfn->instructions[i];
         if (inst->opcode == NY_MOPC_CALL) {
             frame->has_call = true;
+            size_t call_args = (inst->op_count > 1) ? (inst->op_count - 1) : 0;
+            if (call_args > abi_arg_reg_count) {
+                size_t stack_args = call_args - abi_arg_reg_count;
+                if (stack_args > max_outgoing_stack_args) {
+                    max_outgoing_stack_args = stack_args;
+                }
+            }
         }
 
         if (ny_mreg_is_valid(inst->def_reg) && !inst->def_reg.is_virtual) {
@@ -52,13 +64,24 @@ void x86_frame_layout(X86_Stack_Frame *frame, const Ny_Machine_Function *mfn, Ny
         frame->slot_offsets[i] = -(int32_t)current_offset;
     }
 
-    if (abi == NY_ABI_WINDOWS_X64 && frame->has_call) {
-        current_offset += 32;
+    uint32_t outgoing_size = 0;
+    if (abi == NY_ABI_WINDOWS_X64) {
+        if (frame->has_call) {
+            outgoing_size = 32 + (uint32_t)(max_outgoing_stack_args * 8);
+        }
+    } else {
+        outgoing_size = (uint32_t)(max_outgoing_stack_args * 8);
     }
+    current_offset += outgoing_size;
 
-    size_t total = (num_callee_saved * 8) + current_offset;
-    size_t aligned_total = (total + 15) & ~15;
-    frame->stack_size = (uint32_t)(aligned_total - (num_callee_saved * 8));
+    size_t pushes_bytes = (num_callee_saved + 1) * 8;
+    if (frame->has_call || current_offset > 0) {
+        size_t total = pushes_bytes + current_offset;
+        size_t aligned_total = (total + 15) & ~15;
+        frame->stack_size = (uint32_t)(aligned_total - pushes_bytes);
+    } else {
+        frame->stack_size = 0;
+    }
 }
 
 void x86_emit_prologue(X86_Block *blk, const X86_Stack_Frame *frame) {

@@ -79,6 +79,8 @@ void test_object_e2e_external_calls(void);
 void test_object_e2e_linker_diagnostics(void);
 void test_object_globals_rodata_data_bss(void);
 void test_object_e2e_globals_execution(void);
+void test_object_e2e_abi_stack_arguments(void);
+void test_object_e2e_abi_scalar_widths(void);
 
 void test_nygen_compile_raw_ir(void);
 void test_nygen_compile_opt_ir(void);
@@ -167,6 +169,8 @@ int main(void) {
     RUN_TEST(test_object_e2e_linker_diagnostics);
     RUN_TEST(test_object_globals_rodata_data_bss);
     RUN_TEST(test_object_e2e_globals_execution);
+    RUN_TEST(test_object_e2e_abi_stack_arguments);
+    RUN_TEST(test_object_e2e_abi_scalar_widths);
 
     RUN_TEST(test_nygen_compile_raw_ir);
     RUN_TEST(test_nygen_compile_opt_ir);
