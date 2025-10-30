@@ -117,7 +117,9 @@ static void encode_modrm_op(X86_Code_Buffer *buf,
     bool force_rex = false;
 
     if (!reg_is_ext) {
-        if (reg_or_ext >= 8) {
+        if (reg_or_ext >= X86_XMM0 && reg_or_ext < X86_PHYS_REG_COUNT) {
+            reg_or_ext = reg_or_ext - X86_XMM0;
+        } else if (reg_or_ext >= 8 && reg_or_ext < X86_GPR_COUNT) {
             r = true;
         } else if (size == 1 && is_byte_rex_reg(reg_or_ext)) {
             force_rex = true;
@@ -125,20 +127,23 @@ static void encode_modrm_op(X86_Code_Buffer *buf,
     }
 
     if (rm_op->kind == X86_OP_REG) {
-        if (rm_op->reg.phys_reg >= 8) {
+        uint8_t rm_phys = rm_op->reg.phys_reg;
+        if (rm_phys >= X86_XMM0 && rm_phys < X86_PHYS_REG_COUNT) {
+            // XMM0-XMM7 do not need REX.B
+        } else if (rm_phys >= 8 && rm_phys < X86_GPR_COUNT) {
             b = true;
-        } else if (size == 1 && is_byte_rex_reg(rm_op->reg.phys_reg)) {
+        } else if (size == 1 && is_byte_rex_reg(rm_phys)) {
             force_rex = true;
         }
     } else if (rm_op->kind == X86_OP_MEM) {
         const X86_Mem *m = &rm_op->mem;
         if (!m->is_rip_relative && m->base.phys_reg != X86_NO_REG) {
-            if (m->base.phys_reg >= 8) {
+            if (m->base.phys_reg >= 8 && m->base.phys_reg < X86_GPR_COUNT) {
                 b = true;
             }
         }
         if (x86_reg_is_valid(m->index) && m->index.phys_reg != X86_NO_REG) {
-            if (m->index.phys_reg >= 8) {
+            if (m->index.phys_reg >= 8 && m->index.phys_reg < X86_GPR_COUNT) {
                 x = true;
             }
         }
@@ -157,7 +162,11 @@ static void encode_modrm_op(X86_Code_Buffer *buf,
 
     if (rm_op->kind == X86_OP_REG) {
         uint8_t mod = 0b11;
-        uint8_t rm_bits = rm_op->reg.phys_reg & 7;
+        uint8_t rm_phys = rm_op->reg.phys_reg;
+        if (rm_phys >= X86_XMM0 && rm_phys < X86_PHYS_REG_COUNT) {
+            rm_phys = rm_phys - X86_XMM0;
+        }
+        uint8_t rm_bits = rm_phys & 7;
         x86_buf_append_byte(buf, (uint8_t)((mod << 6) | (reg_bits << 3) | rm_bits));
     } else if (rm_op->kind == X86_OP_MEM) {
         const X86_Mem *m = &rm_op->mem;
@@ -230,7 +239,7 @@ bool x86_validate_instruction(const X86_Instruction *inst, Ny_Diagnostic_List *d
     for (size_t i = 0; i < inst->op_count; i++) {
         const X86_Operand *op = &inst->ops[i];
         if (op->kind == X86_OP_REG) {
-            if (op->reg.is_virtual || op->reg.phys_reg >= X86_GPR_COUNT) {
+            if (op->reg.is_virtual || op->reg.phys_reg >= X86_PHYS_REG_COUNT) {
                 if (diags) ny_diagnostic_list_append(diags, "unallocated virtual or invalid register in machine encoder");
                 return false;
             }
@@ -626,6 +635,99 @@ bool x86_encode_instruction(X86_Code_Buffer *buf, const X86_Instruction *inst, N
     case X86_OPC_UD2: {
         x86_buf_append_byte(buf, 0x0F);
         x86_buf_append_byte(buf, 0x0B);
+        return true;
+    }
+    case X86_OPC_MOVSS:
+    case X86_OPC_MOVSD: {
+        const X86_Operand *dst = &inst->ops[0];
+        const X86_Operand *src = &inst->ops[1];
+        uint8_t prefix = (inst->opcode == X86_OPC_MOVSS) ? 0xF3 : 0xF2;
+        x86_buf_append_byte(buf, prefix);
+
+        if (dst->kind == X86_OP_REG) {
+            uint8_t opc[2] = { 0x0F, 0x10 };
+            encode_modrm_op(buf, opc, 2, false, dst->reg.phys_reg, src, inst->size, false);
+            return true;
+        }
+        if (dst->kind == X86_OP_MEM && src->kind == X86_OP_REG) {
+            uint8_t opc[2] = { 0x0F, 0x11 };
+            encode_modrm_op(buf, opc, 2, false, src->reg.phys_reg, dst, inst->size, false);
+            return true;
+        }
+        break;
+    }
+    case X86_OPC_ADDSS:
+    case X86_OPC_ADDSD:
+    case X86_OPC_SUBSS:
+    case X86_OPC_SUBSD:
+    case X86_OPC_MULSS:
+    case X86_OPC_MULSD:
+    case X86_OPC_DIVSS:
+    case X86_OPC_DIVSD: {
+        const X86_Operand *dst = &inst->ops[0];
+        const X86_Operand *src = &inst->ops[1];
+        bool is_single = (inst->opcode == X86_OPC_ADDSS || inst->opcode == X86_OPC_SUBSS ||
+                          inst->opcode == X86_OPC_MULSS || inst->opcode == X86_OPC_DIVSS);
+        uint8_t prefix = is_single ? 0xF3 : 0xF2;
+        x86_buf_append_byte(buf, prefix);
+
+        uint8_t byte2 = 0x58;
+        if (inst->opcode == X86_OPC_ADDSS || inst->opcode == X86_OPC_ADDSD) byte2 = 0x58;
+        else if (inst->opcode == X86_OPC_SUBSS || inst->opcode == X86_OPC_SUBSD) byte2 = 0x5C;
+        else if (inst->opcode == X86_OPC_MULSS || inst->opcode == X86_OPC_MULSD) byte2 = 0x59;
+        else if (inst->opcode == X86_OPC_DIVSS || inst->opcode == X86_OPC_DIVSD) byte2 = 0x5E;
+
+        uint8_t opc[2] = { 0x0F, byte2 };
+        encode_modrm_op(buf, opc, 2, false, dst->reg.phys_reg, src, inst->size, false);
+        return true;
+    }
+    case X86_OPC_CVTSI2SS:
+    case X86_OPC_CVTSI2SD: {
+        const X86_Operand *dst = &inst->ops[0];
+        const X86_Operand *src = &inst->ops[1];
+        uint8_t prefix = (inst->opcode == X86_OPC_CVTSI2SS) ? 0xF3 : 0xF2;
+        x86_buf_append_byte(buf, prefix);
+        uint8_t opc[2] = { 0x0F, 0x2A };
+        bool rex_w = (src->kind == X86_OP_REG && src->reg.size == 8);
+        encode_modrm_op(buf, opc, 2, false, dst->reg.phys_reg, src, inst->size, rex_w);
+        return true;
+    }
+    case X86_OPC_CVTTSS2SI:
+    case X86_OPC_CVTTSD2SI: {
+        const X86_Operand *dst = &inst->ops[0];
+        const X86_Operand *src = &inst->ops[1];
+        uint8_t prefix = (inst->opcode == X86_OPC_CVTTSS2SI) ? 0xF3 : 0xF2;
+        x86_buf_append_byte(buf, prefix);
+        uint8_t opc[2] = { 0x0F, 0x2C };
+        bool rex_w = (dst->kind == X86_OP_REG && dst->reg.size == 8);
+        encode_modrm_op(buf, opc, 2, false, dst->reg.phys_reg, src, inst->size, rex_w);
+        return true;
+    }
+    case X86_OPC_CVTSS2SD: {
+        const X86_Operand *dst = &inst->ops[0];
+        const X86_Operand *src = &inst->ops[1];
+        x86_buf_append_byte(buf, 0xF3);
+        uint8_t opc[2] = { 0x0F, 0x5A };
+        encode_modrm_op(buf, opc, 2, false, dst->reg.phys_reg, src, inst->size, false);
+        return true;
+    }
+    case X86_OPC_CVTSD2SS: {
+        const X86_Operand *dst = &inst->ops[0];
+        const X86_Operand *src = &inst->ops[1];
+        x86_buf_append_byte(buf, 0xF2);
+        uint8_t opc[2] = { 0x0F, 0x5A };
+        encode_modrm_op(buf, opc, 2, false, dst->reg.phys_reg, src, inst->size, false);
+        return true;
+    }
+    case X86_OPC_UCOMISS:
+    case X86_OPC_UCOMISD: {
+        const X86_Operand *dst = &inst->ops[0];
+        const X86_Operand *src = &inst->ops[1];
+        if (inst->opcode == X86_OPC_UCOMISD) {
+            x86_buf_append_byte(buf, 0x66);
+        }
+        uint8_t opc[2] = { 0x0F, 0x2E };
+        encode_modrm_op(buf, opc, 2, false, dst->reg.phys_reg, src, inst->size, false);
         return true;
     }
     default:

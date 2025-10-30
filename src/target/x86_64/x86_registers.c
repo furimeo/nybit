@@ -24,6 +24,10 @@ static const char *s_reg_names_8[X86_GPR_COUNT] = {
     "r8b",  "r9b",  "r10b", "r11b", "r12b", "r13b", "r14b", "r15b"
 };
 
+static const char *s_reg_names_xmm[X86_XMM_COUNT] = {
+    "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"
+};
+
 const char *x86_reg_name(X86_Reg reg) {
     if (reg.is_virtual) {
         static _Thread_local char vbufs[8][32];
@@ -31,6 +35,10 @@ const char *x86_reg_name(X86_Reg reg) {
         char *buf = vbufs[vidx++ & 7];
         snprintf(buf, 32, "%%v%u", reg.id);
         return buf;
+    }
+
+    if (reg.phys_reg >= X86_XMM0 && reg.phys_reg < X86_XMM0 + X86_XMM_COUNT) {
+        return s_reg_names_xmm[reg.phys_reg - X86_XMM0];
     }
 
     if (reg.phys_reg >= X86_GPR_COUNT) {
@@ -92,6 +100,24 @@ const char *x86_opcode_mnemonic(X86_Opcode opc) {
     case X86_OPC_CDQ:   return "cdq";
     case X86_OPC_CQO:   return "cqo";
     case X86_OPC_UD2:   return "ud2";
+    case X86_OPC_MOVSS: return "movss";
+    case X86_OPC_MOVSD: return "movsd";
+    case X86_OPC_ADDSS: return "addss";
+    case X86_OPC_ADDSD: return "addsd";
+    case X86_OPC_SUBSS: return "subss";
+    case X86_OPC_SUBSD: return "subsd";
+    case X86_OPC_MULSS: return "mulss";
+    case X86_OPC_MULSD: return "mulsd";
+    case X86_OPC_DIVSS: return "divss";
+    case X86_OPC_DIVSD: return "divsd";
+    case X86_OPC_CVTSI2SS: return "cvtsi2ss";
+    case X86_OPC_CVTSI2SD: return "cvtsi2sd";
+    case X86_OPC_CVTTSS2SI: return "cvttss2si";
+    case X86_OPC_CVTTSD2SI: return "cvttsd2si";
+    case X86_OPC_CVTSS2SD: return "cvtss2sd";
+    case X86_OPC_CVTSD2SS: return "cvtsd2ss";
+    case X86_OPC_UCOMISS:  return "ucomiss";
+    case X86_OPC_UCOMISD:  return "ucomisd";
     case X86_OPC_NONE:
     default:
         return "unknown";
@@ -106,6 +132,14 @@ static const X86_Phys_Reg s_win64_arg_regs[] = {
     X86_RCX, X86_RDX, X86_R8, X86_R9
 };
 
+static const X86_Phys_Reg s_sysv_fp_arg_regs[] = {
+    X86_XMM0, X86_XMM1, X86_XMM2, X86_XMM3, X86_XMM4, X86_XMM5, X86_XMM6, X86_XMM7
+};
+
+static const X86_Phys_Reg s_win64_fp_arg_regs[] = {
+    X86_XMM0, X86_XMM1, X86_XMM2, X86_XMM3
+};
+
 const X86_Phys_Reg *x86_abi_arg_regs(Ny_Target_ABI abi, size_t *out_count) {
     if (abi == NY_ABI_WINDOWS_X64) {
         *out_count = sizeof(s_win64_arg_regs) / sizeof(s_win64_arg_regs[0]);
@@ -115,9 +149,21 @@ const X86_Phys_Reg *x86_abi_arg_regs(Ny_Target_ABI abi, size_t *out_count) {
     return s_sysv_arg_regs;
 }
 
-X86_Phys_Reg x86_abi_ret_reg(Ny_Target_ABI abi, uint8_t size) {
+const X86_Phys_Reg *x86_abi_fp_arg_regs(Ny_Target_ABI abi, size_t *out_count) {
+    if (abi == NY_ABI_WINDOWS_X64) {
+        *out_count = sizeof(s_win64_fp_arg_regs) / sizeof(s_win64_fp_arg_regs[0]);
+        return s_win64_fp_arg_regs;
+    }
+    *out_count = sizeof(s_sysv_fp_arg_regs) / sizeof(s_sysv_fp_arg_regs[0]);
+    return s_sysv_fp_arg_regs;
+}
+
+X86_Phys_Reg x86_abi_ret_reg(Ny_Target_ABI abi, uint8_t size, bool is_fp) {
     (void)abi;
     (void)size;
+    if (is_fp) {
+        return X86_XMM0;
+    }
     return X86_RAX;
 }
 

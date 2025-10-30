@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/machine.h"
 #include "nybit/analysis.h"
+#include <stdio.h>
 
 static Ny_Reg_Class type_to_reg_class(const Ny_Type_Table *tt, Ny_Type_ID ty) {
     switch (ty) {
@@ -154,14 +155,27 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
 
     for (size_t i = 0; i < fn->val_count; i++) {
         Ny_Value *v = ny_function_get_value(fn, (Ny_Value_ID)i);
-        if (v && v->kind == NY_VAL_ARGUMENT) {
-            Ny_Reg_Class rc = type_to_reg_class(&ir_mod->types, v->type);
-            Ny_Machine_Reg vreg = ny_mfunc_create_vreg(mfn, rc);
-            val_map[i] = vreg;
-            ny_mfunc_add_param(mfn, vreg);
-        } else if (v && (v->kind == NY_VAL_INSTRUCTION || v->kind == NY_VAL_CONSTANT)) {
-            Ny_Reg_Class rc = type_to_reg_class(&ir_mod->types, v->type);
-            val_map[i] = ny_mfunc_create_vreg(mfn, rc);
+        if (v) {
+            if (v->type == NY_TYPE_I128 || v->type == NY_TYPE_F16 || ny_type_is_vector(&ir_mod->types, v->type)) {
+                if (diags) {
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), "target x86-64 does not support type '%s'", ny_type_name(&ir_mod->types, v->type));
+                    ny_diagnostic_list_append(diags, buf);
+                }
+                ny_free(val_map, val_map_size * sizeof(Ny_Machine_Reg));
+                ny_free(blk_map, blk_map_size * sizeof(Ny_Block_ID));
+                ny_cfg_info_destroy(&cfg);
+                return false;
+            }
+            if (v->kind == NY_VAL_ARGUMENT) {
+                Ny_Reg_Class rc = type_to_reg_class(&ir_mod->types, v->type);
+                Ny_Machine_Reg vreg = ny_mfunc_create_vreg(mfn, rc);
+                val_map[i] = vreg;
+                ny_mfunc_add_param(mfn, vreg);
+            } else if (v->kind == NY_VAL_INSTRUCTION || v->kind == NY_VAL_CONSTANT) {
+                Ny_Reg_Class rc = type_to_reg_class(&ir_mod->types, v->type);
+                val_map[i] = ny_mfunc_create_vreg(mfn, rc);
+            }
         }
     }
 

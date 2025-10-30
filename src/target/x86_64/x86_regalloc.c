@@ -15,32 +15,36 @@ static inline bool bitset_test(const uint64_t *bits, size_t words_per_block, siz
     return (bits[idx] & ((uint64_t)1 << (val % 64))) != 0;
 }
 
-static const X86_Phys_Reg s_sysv_caller_saved[] = {
+static const X86_Phys_Reg s_sysv_gpr_caller_saved[] = {
     X86_R9, X86_R8, X86_RCX, X86_RDX, X86_RSI, X86_RDI, X86_RAX
 };
 
-static const X86_Phys_Reg s_sysv_callee_saved[] = {
+static const X86_Phys_Reg s_sysv_gpr_callee_saved[] = {
     X86_RBX, X86_R12, X86_R13, X86_R14, X86_R15
 };
 
-static const X86_Phys_Reg s_win64_caller_saved[] = {
+static const X86_Phys_Reg s_win64_gpr_caller_saved[] = {
     X86_R9, X86_R8, X86_RDX, X86_RCX, X86_RAX
 };
 
-static const X86_Phys_Reg s_win64_callee_saved[] = {
+static const X86_Phys_Reg s_win64_gpr_callee_saved[] = {
     X86_RBX, X86_RSI, X86_RDI, X86_R12, X86_R13, X86_R14, X86_R15
 };
 
-static bool is_reg_available(uint16_t free_mask, X86_Phys_Reg reg) {
-    return (free_mask & (1 << reg)) != 0;
+static const X86_Phys_Reg s_fp_caller_saved[] = {
+    X86_XMM0, X86_XMM1, X86_XMM2, X86_XMM3, X86_XMM4, X86_XMM5, X86_XMM6, X86_XMM7
+};
+
+static bool is_reg_available(uint32_t free_mask, X86_Phys_Reg reg) {
+    return (free_mask & ((uint32_t)1 << reg)) != 0;
 }
 
-static void free_reg(uint16_t *free_mask, X86_Phys_Reg reg) {
-    *free_mask |= (1 << reg);
+static void free_reg(uint32_t *free_mask, X86_Phys_Reg reg) {
+    *free_mask |= ((uint32_t)1 << reg);
 }
 
-static void take_reg(uint16_t *free_mask, X86_Phys_Reg reg) {
-    *free_mask &= ~(1 << reg);
+static void take_reg(uint32_t *free_mask, X86_Phys_Reg reg) {
+    *free_mask &= ~((uint32_t)1 << reg);
 }
 
 static int compare_interval_start(const void *a, const void *b) {
@@ -259,17 +263,20 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
     ny_free(blk_start, b_count * sizeof(uint32_t));
     ny_free(blk_end, b_count * sizeof(uint32_t));
 
-    const X86_Phys_Reg *caller_saved = (abi == NY_ABI_WINDOWS_X64) ? s_win64_caller_saved : s_sysv_caller_saved;
-    size_t caller_saved_count = (abi == NY_ABI_WINDOWS_X64) ? sizeof(s_win64_caller_saved) / sizeof(s_win64_caller_saved[0])
-                                                           : sizeof(s_sysv_caller_saved) / sizeof(s_sysv_caller_saved[0]);
+    const X86_Phys_Reg *caller_saved = (abi == NY_ABI_WINDOWS_X64) ? s_win64_gpr_caller_saved : s_sysv_gpr_caller_saved;
+    size_t caller_saved_count = (abi == NY_ABI_WINDOWS_X64) ? sizeof(s_win64_gpr_caller_saved) / sizeof(s_win64_gpr_caller_saved[0])
+                                                           : sizeof(s_sysv_gpr_caller_saved) / sizeof(s_sysv_gpr_caller_saved[0]);
 
-    const X86_Phys_Reg *callee_saved = (abi == NY_ABI_WINDOWS_X64) ? s_win64_callee_saved : s_sysv_callee_saved;
-    size_t callee_saved_count = (abi == NY_ABI_WINDOWS_X64) ? sizeof(s_win64_callee_saved) / sizeof(s_win64_callee_saved[0])
-                                                           : sizeof(s_sysv_callee_saved) / sizeof(s_sysv_callee_saved[0]);
+    const X86_Phys_Reg *callee_saved = (abi == NY_ABI_WINDOWS_X64) ? s_win64_gpr_callee_saved : s_sysv_gpr_callee_saved;
+    size_t callee_saved_count = (abi == NY_ABI_WINDOWS_X64) ? sizeof(s_win64_gpr_callee_saved) / sizeof(s_win64_gpr_callee_saved[0])
+                                                           : sizeof(s_sysv_gpr_callee_saved) / sizeof(s_sysv_gpr_callee_saved[0]);
 
-    uint16_t free_mask = 0;
+    size_t fp_caller_saved_count = sizeof(s_fp_caller_saved) / sizeof(s_fp_caller_saved[0]);
+
+    uint32_t free_mask = 0;
     for (size_t i = 0; i < caller_saved_count; i++) free_reg(&free_mask, caller_saved[i]);
     for (size_t i = 0; i < callee_saved_count; i++) free_reg(&free_mask, callee_saved[i]);
+    for (size_t i = 0; i < fp_caller_saved_count; i++) free_reg(&free_mask, s_fp_caller_saved[i]);
 
     Ny_Live_Interval **sorted_intervals = (Ny_Live_Interval **)ny_alloc(v_count * sizeof(Ny_Live_Interval *));
     for (size_t i = 0; i < v_count; i++) {
@@ -279,7 +286,7 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
 
     Ny_Live_Interval **active = (Ny_Live_Interval **)ny_alloc(v_count * sizeof(Ny_Live_Interval *));
     size_t active_count = 0;
-    uint16_t used_callee_saved_mask = 0;
+    uint32_t used_callee_saved_mask = 0;
     size_t spilled_count = 0;
 
     for (size_t i = 0; i < v_count; i++) {
@@ -296,8 +303,18 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
         active_count = new_active_count;
 
         X86_Phys_Reg chosen_reg = X86_NO_REG;
+        bool is_fp = (cur->reg_class == NY_REG_CLASS_FP32 || cur->reg_class == NY_REG_CLASS_FP64);
 
-        if (cur->crosses_call) {
+        if (is_fp) {
+            if (!cur->crosses_call) {
+                for (size_t c = 0; c < fp_caller_saved_count; c++) {
+                    if (is_reg_available(free_mask, s_fp_caller_saved[c])) {
+                        chosen_reg = s_fp_caller_saved[c];
+                        break;
+                    }
+                }
+            }
+        } else if (cur->crosses_call) {
             for (size_t c = 0; c < callee_saved_count; c++) {
                 if (is_reg_available(free_mask, callee_saved[c])) {
                     chosen_reg = callee_saved[c];
@@ -334,7 +351,7 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
             take_reg(&free_mask, chosen_reg);
 
             if (x86_abi_is_callee_saved(abi, chosen_reg)) {
-                used_callee_saved_mask |= (1 << chosen_reg);
+                used_callee_saved_mask |= ((uint32_t)1 << chosen_reg);
             }
 
             size_t insert_pos = active_count;
@@ -345,19 +362,35 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
             active[insert_pos] = cur;
             active_count++;
         } else {
-            if (active_count > 0 && active[active_count - 1]->end_idx > cur->end_idx) {
-                Ny_Live_Interval *victim = active[active_count - 1];
+            // Find victim of the same register family (FP vs GPR)
+            size_t victim_idx = SIZE_MAX;
+            for (ssize_t a = (ssize_t)active_count - 1; a >= 0; a--) {
+                bool victim_is_fp = (active[a]->reg_class == NY_REG_CLASS_FP32 || active[a]->reg_class == NY_REG_CLASS_FP64);
+                if (victim_is_fp == is_fp && active[a]->end_idx > cur->end_idx) {
+                    victim_idx = (size_t)a;
+                    break;
+                }
+            }
+
+            if (victim_idx != SIZE_MAX) {
+                Ny_Live_Interval *victim = active[victim_idx];
                 cur->assigned_phys = victim->assigned_phys;
                 victim->assigned_phys = X86_NO_REG;
                 victim->is_spilled = true;
                 spilled_count++;
 
-                size_t insert_pos = active_count - 1;
+                for (size_t a = victim_idx; a + 1 < active_count; a++) {
+                    active[a] = active[a + 1];
+                }
+                active_count--;
+
+                size_t insert_pos = active_count;
                 while (insert_pos > 0 && active[insert_pos - 1]->end_idx > cur->end_idx) {
                     active[insert_pos] = active[insert_pos - 1];
                     insert_pos--;
                 }
                 active[insert_pos] = cur;
+                active_count++;
             } else {
                 cur->is_spilled = true;
                 cur->assigned_phys = X86_NO_REG;
@@ -382,12 +415,22 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
             Ny_Inst_ID next_inst = fn->instructions[curr].next;
 
             uint16_t op_count = fn->instructions[curr].op_count;
+            size_t fp_spill_idx = 0;
+            size_t gpr_spill_idx = 0;
             for (size_t op_i = 0; op_i < op_count; op_i++) {
                 Ny_Machine_Operand *ops = ny_mfunc_get_operands(fn, &fn->instructions[curr]);
                 if (ops[op_i].kind == NY_MOP_KIND_REG && ops[op_i].reg.is_virtual) {
                     uint32_t v = ops[op_i].reg.id;
                     if (intervals[v].is_spilled) {
-                        X86_Phys_Reg scratch_phys = (op_i == 0) ? X86_R11 : X86_R10;
+                        bool is_fp = (intervals[v].reg_class == NY_REG_CLASS_FP32 || intervals[v].reg_class == NY_REG_CLASS_FP64);
+                        X86_Phys_Reg scratch_phys;
+                        if (is_fp) {
+                            scratch_phys = (fp_spill_idx == 0) ? X86_XMM7 : ((fp_spill_idx == 1) ? X86_XMM6 : X86_XMM5);
+                            fp_spill_idx++;
+                        } else {
+                            scratch_phys = (gpr_spill_idx == 0) ? X86_R11 : X86_R10;
+                            gpr_spill_idx++;
+                        }
                         Ny_Machine_Reg scratch_reg = ny_mreg_preg(scratch_phys, (Ny_Reg_Class)intervals[v].reg_class);
                         Ny_Machine_Operand load_op;
                         memset(&load_op, 0, sizeof(load_op));
@@ -442,7 +485,9 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
             if (ny_mreg_is_valid(fn->instructions[curr].def_reg) && fn->instructions[curr].def_reg.is_virtual) {
                 uint32_t v = fn->instructions[curr].def_reg.id;
                 if (intervals[v].is_spilled) {
-                    Ny_Machine_Reg scratch_reg = ny_mreg_preg(X86_R11, (Ny_Reg_Class)intervals[v].reg_class);
+                    bool is_fp = (intervals[v].reg_class == NY_REG_CLASS_FP32 || intervals[v].reg_class == NY_REG_CLASS_FP64);
+                    X86_Phys_Reg scratch_phys = is_fp ? X86_XMM7 : X86_R11;
+                    Ny_Machine_Reg scratch_reg = ny_mreg_preg(scratch_phys, (Ny_Reg_Class)intervals[v].reg_class);
                     fn->instructions[curr].def_reg = scratch_reg;
 
                     Ny_Machine_Operand store_ops[2];
@@ -465,7 +510,9 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
         if (fn->param_regs[p].is_virtual) {
             uint32_t v = fn->param_regs[p].id;
             if (intervals[v].is_spilled) {
-                fn->param_regs[p] = ny_mreg_preg(X86_R11, (Ny_Reg_Class)intervals[v].reg_class);
+                bool is_fp = (intervals[v].reg_class == NY_REG_CLASS_FP32 || intervals[v].reg_class == NY_REG_CLASS_FP64);
+                X86_Phys_Reg scratch_phys = is_fp ? X86_XMM7 : X86_R11;
+                fn->param_regs[p] = ny_mreg_preg(scratch_phys, (Ny_Reg_Class)intervals[v].reg_class);
             } else {
                 fn->param_regs[p] = ny_mreg_preg(intervals[v].assigned_phys, (Ny_Reg_Class)intervals[v].reg_class);
             }
@@ -503,7 +550,7 @@ bool ny_mfunc_validate_allocated(const Ny_Machine_Function *fn, Ny_Diagnostic_Li
                         ny_diagnostic_list_append(diags, buf);
                     }
                 }
-                if (inst->def_reg.phys_reg >= X86_GPR_COUNT) {
+                if (inst->def_reg.phys_reg >= X86_PHYS_REG_COUNT) {
                     valid = false;
                     if (diags) {
                         char buf[128];
@@ -526,7 +573,7 @@ bool ny_mfunc_validate_allocated(const Ny_Machine_Function *fn, Ny_Diagnostic_Li
                             ny_diagnostic_list_append(diags, buf);
                         }
                     }
-                    if (ops[i].reg.phys_reg >= X86_GPR_COUNT) {
+                    if (ops[i].reg.phys_reg >= X86_PHYS_REG_COUNT) {
                         valid = false;
                         if (diags) {
                             char buf[128];

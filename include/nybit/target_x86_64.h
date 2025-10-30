@@ -29,6 +29,16 @@ typedef enum X86_Phys_Reg {
     X86_R14 = 14,
     X86_R15 = 15,
     X86_GPR_COUNT = 16,
+    X86_XMM0 = 16,
+    X86_XMM1 = 17,
+    X86_XMM2 = 18,
+    X86_XMM3 = 19,
+    X86_XMM4 = 20,
+    X86_XMM5 = 21,
+    X86_XMM6 = 22,
+    X86_XMM7 = 23,
+    X86_XMM_COUNT = 8,
+    X86_PHYS_REG_COUNT = 24,
     X86_NO_REG = 255,
 } X86_Phys_Reg;
 
@@ -166,6 +176,24 @@ typedef enum X86_Opcode {
     X86_OPC_CDQ,
     X86_OPC_CQO,
     X86_OPC_UD2,
+    X86_OPC_MOVSS,
+    X86_OPC_MOVSD,
+    X86_OPC_ADDSS,
+    X86_OPC_ADDSD,
+    X86_OPC_SUBSS,
+    X86_OPC_SUBSD,
+    X86_OPC_MULSS,
+    X86_OPC_MULSD,
+    X86_OPC_DIVSS,
+    X86_OPC_DIVSD,
+    X86_OPC_CVTSI2SS,
+    X86_OPC_CVTSI2SD,
+    X86_OPC_CVTTSS2SI,
+    X86_OPC_CVTTSD2SI,
+    X86_OPC_CVTSS2SD,
+    X86_OPC_CVTSD2SS,
+    X86_OPC_UCOMISS,
+    X86_OPC_UCOMISD,
     X86_OPC_COUNT,
 } X86_Opcode;
 
@@ -226,7 +254,8 @@ void x86_mod_destroy(X86_Module *mod);
 
 /* ABI queries */
 const X86_Phys_Reg *x86_abi_arg_regs(Ny_Target_ABI abi, size_t *out_count);
-X86_Phys_Reg x86_abi_ret_reg(Ny_Target_ABI abi, uint8_t size);
+const X86_Phys_Reg *x86_abi_fp_arg_regs(Ny_Target_ABI abi, size_t *out_count);
+X86_Phys_Reg x86_abi_ret_reg(Ny_Target_ABI abi, uint8_t size, bool is_fp);
 bool x86_abi_is_callee_saved(Ny_Target_ABI abi, X86_Phys_Reg reg);
 
 /* Lowering */

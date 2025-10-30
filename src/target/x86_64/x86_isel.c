@@ -104,8 +104,14 @@ static void lower_instruction(X86_Block *xblk, const Ny_Machine_Function *mfn,
     case NY_MOPC_COPY: {
         X86_Operand src = lower_operand(mops[0], frame);
         if (!is_same_reg(def_r, src)) {
+            bool is_fp = (def_r.phys_reg >= X86_XMM0 && def_r.phys_reg <= X86_XMM7) ||
+                         (src.kind == X86_OP_REG && src.reg.phys_reg >= X86_XMM0 && src.reg.phys_reg <= X86_XMM7);
+            X86_Opcode opc = X86_OPC_MOV;
+            if (is_fp) {
+                opc = (def_r.size == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD;
+            }
             X86_Instruction inst = {
-                .opcode = X86_OPC_MOV,
+                .opcode = (uint16_t)opc,
                 .size = def_r.size,
                 .cond = X86_COND_NONE,
                 .op_count = 2,
@@ -117,8 +123,13 @@ static void lower_instruction(X86_Block *xblk, const Ny_Machine_Function *mfn,
     }
     case NY_MOPC_LOAD: {
         X86_Operand src = lower_operand(mops[0], frame);
+        bool is_fp = (def_r.phys_reg >= X86_XMM0 && def_r.phys_reg <= X86_XMM7);
+        X86_Opcode opc = X86_OPC_MOV;
+        if (is_fp) {
+            opc = (def_r.size == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD;
+        }
         X86_Instruction inst = {
-            .opcode = X86_OPC_MOV,
+            .opcode = (uint16_t)opc,
             .size = def_r.size,
             .cond = X86_COND_NONE,
             .op_count = 2,
@@ -132,8 +143,13 @@ static void lower_instruction(X86_Block *xblk, const Ny_Machine_Function *mfn,
         X86_Operand src = lower_operand(mops[1], frame);
         uint8_t sz = 8;
         if (src.kind == X86_OP_REG) sz = src.reg.size;
+        bool is_fp = (src.kind == X86_OP_REG && src.reg.phys_reg >= X86_XMM0 && src.reg.phys_reg <= X86_XMM7);
+        X86_Opcode opc = X86_OPC_MOV;
+        if (is_fp) {
+            opc = (sz == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD;
+        }
         X86_Instruction inst = {
-            .opcode = X86_OPC_MOV,
+            .opcode = (uint16_t)opc,
             .size = sz,
             .cond = X86_COND_NONE,
             .op_count = 2,
@@ -152,6 +168,54 @@ static void lower_instruction(X86_Block *xblk, const Ny_Machine_Function *mfn,
             .ops = { x86_op_reg(def_r), src }
         };
         x86_block_append_inst(xblk, inst);
+        break;
+    }
+    case NY_MOPC_FADD:
+    case NY_MOPC_FSUB:
+    case NY_MOPC_FMUL:
+    case NY_MOPC_FDIV: {
+        X86_Operand lhs = lower_operand(mops[0], frame);
+        X86_Operand rhs = lower_operand(mops[1], frame);
+        X86_Opcode mov_opc = (def_r.size == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD;
+
+        if (!is_same_reg(def_r, lhs)) {
+            X86_Instruction mov_inst = {
+                .opcode = (uint16_t)mov_opc,
+                .size = def_r.size,
+                .cond = X86_COND_NONE,
+                .op_count = 2,
+                .ops = { x86_op_reg(def_r), lhs }
+            };
+            x86_block_append_inst(xblk, mov_inst);
+        }
+
+        X86_Opcode opc = X86_OPC_NONE;
+        if (def_r.size == 4) {
+            switch ((Ny_Machine_Opcode)minst->opcode) {
+            case NY_MOPC_FADD: opc = X86_OPC_ADDSS; break;
+            case NY_MOPC_FSUB: opc = X86_OPC_SUBSS; break;
+            case NY_MOPC_FMUL: opc = X86_OPC_MULSS; break;
+            case NY_MOPC_FDIV: opc = X86_OPC_DIVSS; break;
+            default: break;
+            }
+        } else {
+            switch ((Ny_Machine_Opcode)minst->opcode) {
+            case NY_MOPC_FADD: opc = X86_OPC_ADDSD; break;
+            case NY_MOPC_FSUB: opc = X86_OPC_SUBSD; break;
+            case NY_MOPC_FMUL: opc = X86_OPC_MULSD; break;
+            case NY_MOPC_FDIV: opc = X86_OPC_DIVSD; break;
+            default: break;
+            }
+        }
+
+        X86_Instruction op_inst = {
+            .opcode = (uint16_t)opc,
+            .size = def_r.size,
+            .cond = X86_COND_NONE,
+            .op_count = 2,
+            .ops = { x86_op_reg(def_r), rhs }
+        };
+        x86_block_append_inst(xblk, op_inst);
         break;
     }
     case NY_MOPC_ADD:
@@ -332,50 +396,123 @@ static void lower_instruction(X86_Block *xblk, const Ny_Machine_Function *mfn,
         break;
     }
     case NY_MOPC_CALL: {
-        size_t abi_arg_count = 0;
-        const X86_Phys_Reg *abi_args = x86_abi_arg_regs(abi, &abi_arg_count);
+        size_t gpr_arg_count = 0;
+        const X86_Phys_Reg *gpr_args = x86_abi_arg_regs(abi, &gpr_arg_count);
+        size_t fp_arg_count = 0;
+        const X86_Phys_Reg *fp_args = x86_abi_fp_arg_regs(abi, &fp_arg_count);
+
+        size_t gpr_idx = 0;
+        size_t fp_idx = 0;
 
         for (size_t i = 1; i < minst->op_count; i++) {
             X86_Operand arg_op = lower_operand(mops[i], frame);
             size_t arg_idx = i - 1;
-            if (arg_idx < abi_arg_count) {
-                uint8_t sz = 8;
-                if (arg_op.kind == X86_OP_REG) sz = arg_op.reg.size;
-                X86_Reg phys_dst = x86_reg_phys(abi_args[arg_idx], sz);
+            uint8_t sz = 8;
+            if (arg_op.kind == X86_OP_REG) sz = arg_op.reg.size;
 
-                X86_Instruction mov_arg = {
-                    .opcode = X86_OPC_MOV,
-                    .size = sz,
-                    .cond = X86_COND_NONE,
-                    .op_count = 2,
-                    .ops = { x86_op_reg(phys_dst), arg_op }
-                };
-                x86_block_append_inst(xblk, mov_arg);
-            } else {
-                int32_t offset = 0;
-                if (abi == NY_ABI_WINDOWS_X64) {
-                    offset = 32 + (int32_t)((arg_idx - 4) * 8);
+            bool is_fp = false;
+            if (arg_op.kind == X86_OP_REG && arg_op.reg.phys_reg >= X86_XMM0 && arg_op.reg.phys_reg <= X86_XMM7) {
+                is_fp = true;
+            }
+
+            if (abi == NY_ABI_WINDOWS_X64) {
+                if (arg_idx < 4) {
+                    X86_Phys_Reg preg = is_fp ? fp_args[arg_idx] : gpr_args[arg_idx];
+                    X86_Reg phys_dst = x86_reg_phys(preg, sz);
+                    X86_Opcode mov_opc = is_fp ? ((sz == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD) : X86_OPC_MOV;
+
+                    X86_Instruction mov_arg = {
+                        .opcode = (uint16_t)mov_opc,
+                        .size = sz,
+                        .cond = X86_COND_NONE,
+                        .op_count = 2,
+                        .ops = { x86_op_reg(phys_dst), arg_op }
+                    };
+                    x86_block_append_inst(xblk, mov_arg);
                 } else {
-                    offset = (int32_t)((arg_idx - 6) * 8);
+                    int32_t offset = 32 + (int32_t)((arg_idx - 4) * 8);
+                    X86_Mem stack_dst = {
+                        .base = x86_reg_phys(X86_RSP, 8),
+                        .index = (X86_Reg){0},
+                        .scale = 0,
+                        .disp = offset,
+                        .is_rip_relative = false,
+                        .symbol = {0}
+                    };
+                    X86_Opcode mov_opc = is_fp ? ((sz == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD) : X86_OPC_MOV;
+                    X86_Instruction mov_stack_arg = {
+                        .opcode = (uint16_t)mov_opc,
+                        .size = sz,
+                        .cond = X86_COND_NONE,
+                        .op_count = 2,
+                        .ops = { x86_op_mem(stack_dst), arg_op }
+                    };
+                    x86_block_append_inst(xblk, mov_stack_arg);
                 }
-                uint8_t sz = 8;
-                if (arg_op.kind == X86_OP_REG) sz = arg_op.reg.size;
-                X86_Mem stack_dst = {
-                    .base = x86_reg_phys(X86_RSP, 8),
-                    .index = (X86_Reg){0},
-                    .scale = 0,
-                    .disp = offset,
-                    .is_rip_relative = false,
-                    .symbol = {0}
-                };
-                X86_Instruction mov_stack_arg = {
-                    .opcode = X86_OPC_MOV,
-                    .size = sz,
-                    .cond = X86_COND_NONE,
-                    .op_count = 2,
-                    .ops = { x86_op_mem(stack_dst), arg_op }
-                };
-                x86_block_append_inst(xblk, mov_stack_arg);
+            } else {
+                if (is_fp) {
+                    if (fp_idx < fp_arg_count) {
+                        X86_Reg phys_dst = x86_reg_phys(fp_args[fp_idx++], sz);
+                        X86_Opcode mov_opc = (sz == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD;
+                        X86_Instruction mov_arg = {
+                            .opcode = (uint16_t)mov_opc,
+                            .size = sz,
+                            .cond = X86_COND_NONE,
+                            .op_count = 2,
+                            .ops = { x86_op_reg(phys_dst), arg_op }
+                        };
+                        x86_block_append_inst(xblk, mov_arg);
+                    } else {
+                        int32_t offset = (int32_t)((arg_idx - 6) * 8);
+                        X86_Mem stack_dst = {
+                            .base = x86_reg_phys(X86_RSP, 8),
+                            .index = (X86_Reg){0},
+                            .scale = 0,
+                            .disp = offset,
+                            .is_rip_relative = false,
+                            .symbol = {0}
+                        };
+                        X86_Opcode mov_opc = (sz == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD;
+                        X86_Instruction mov_stack_arg = {
+                            .opcode = (uint16_t)mov_opc,
+                            .size = sz,
+                            .cond = X86_COND_NONE,
+                            .op_count = 2,
+                            .ops = { x86_op_mem(stack_dst), arg_op }
+                        };
+                        x86_block_append_inst(xblk, mov_stack_arg);
+                    }
+                } else {
+                    if (gpr_idx < gpr_arg_count) {
+                        X86_Reg phys_dst = x86_reg_phys(gpr_args[gpr_idx++], sz);
+                        X86_Instruction mov_arg = {
+                            .opcode = X86_OPC_MOV,
+                            .size = sz,
+                            .cond = X86_COND_NONE,
+                            .op_count = 2,
+                            .ops = { x86_op_reg(phys_dst), arg_op }
+                        };
+                        x86_block_append_inst(xblk, mov_arg);
+                    } else {
+                        int32_t offset = (int32_t)((arg_idx - 6) * 8);
+                        X86_Mem stack_dst = {
+                            .base = x86_reg_phys(X86_RSP, 8),
+                            .index = (X86_Reg){0},
+                            .scale = 0,
+                            .disp = offset,
+                            .is_rip_relative = false,
+                            .symbol = {0}
+                        };
+                        X86_Instruction mov_stack_arg = {
+                            .opcode = X86_OPC_MOV,
+                            .size = sz,
+                            .cond = X86_COND_NONE,
+                            .op_count = 2,
+                            .ops = { x86_op_mem(stack_dst), arg_op }
+                        };
+                        x86_block_append_inst(xblk, mov_stack_arg);
+                    }
+                }
             }
         }
 
@@ -390,13 +527,17 @@ static void lower_instruction(X86_Block *xblk, const Ny_Machine_Function *mfn,
         x86_block_append_inst(xblk, call_inst);
 
         if (has_def) {
-            X86_Reg rax = x86_reg_phys(X86_RAX, def_r.size);
+            bool is_fp = (def_r.phys_reg >= X86_XMM0 && def_r.phys_reg <= X86_XMM7);
+            X86_Phys_Reg ret_phys = x86_abi_ret_reg(abi, def_r.size, is_fp);
+            X86_Reg ret_reg = x86_reg_phys(ret_phys, def_r.size);
+            X86_Opcode mov_opc = is_fp ? ((def_r.size == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD) : X86_OPC_MOV;
+
             X86_Instruction mov_ret = {
-                .opcode = X86_OPC_MOV,
+                .opcode = (uint16_t)mov_opc,
                 .size = def_r.size,
                 .cond = X86_COND_NONE,
                 .op_count = 2,
-                .ops = { x86_op_reg(def_r), x86_op_reg(rax) }
+                .ops = { x86_op_reg(def_r), x86_op_reg(ret_reg) }
             };
             x86_block_append_inst(xblk, mov_ret);
         }
@@ -407,16 +548,19 @@ static void lower_instruction(X86_Block *xblk, const Ny_Machine_Function *mfn,
             X86_Operand ret_val = lower_operand(mops[0], frame);
             uint8_t sz = 8;
             if (ret_val.kind == X86_OP_REG) sz = ret_val.reg.size;
-            X86_Reg rax = x86_reg_phys(X86_RAX, sz);
+            bool is_fp = (ret_val.kind == X86_OP_REG && ret_val.reg.phys_reg >= X86_XMM0 && ret_val.reg.phys_reg <= X86_XMM7);
+            X86_Phys_Reg ret_phys = x86_abi_ret_reg(abi, sz, is_fp);
+            X86_Reg ret_reg = x86_reg_phys(ret_phys, sz);
+            X86_Opcode mov_opc = is_fp ? ((sz == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD) : X86_OPC_MOV;
 
-            X86_Instruction mov_rax = {
-                .opcode = X86_OPC_MOV,
+            X86_Instruction mov_ret = {
+                .opcode = (uint16_t)mov_opc,
                 .size = sz,
                 .cond = X86_COND_NONE,
                 .op_count = 2,
-                .ops = { x86_op_reg(rax), ret_val }
+                .ops = { x86_op_reg(ret_reg), ret_val }
             };
-            x86_block_append_inst(xblk, mov_rax);
+            x86_block_append_inst(xblk, mov_ret);
         }
         x86_emit_epilogue(xblk, frame);
         X86_Instruction ret_inst = {
@@ -455,8 +599,6 @@ static bool x86_lower_func_impl(const Ny_Target *target, const Ny_Machine_Functi
         out_fn->blocks = (X86_Block *)ny_alloc_zero(out_fn->block_capacity * sizeof(X86_Block));
     }
 
-    size_t abi_arg_count = 0;
-    const X86_Phys_Reg *abi_args = x86_abi_arg_regs(target->abi, &abi_arg_count);
 
     for (size_t b = 0; b < mfn->block_count; b++) {
         const Ny_Machine_Block *mblk = &mfn->blocks[b];
@@ -467,43 +609,118 @@ static bool x86_lower_func_impl(const Ny_Target *target, const Ny_Machine_Functi
         if (b == 0 || mblk->id == mfn->entry_block) {
             x86_emit_prologue(xblk, &out_fn->frame);
 
+            size_t gpr_abi_count = 0;
+            const X86_Phys_Reg *gpr_args = x86_abi_arg_regs(target->abi, &gpr_abi_count);
+            size_t fp_abi_count = 0;
+            const X86_Phys_Reg *fp_args = x86_abi_fp_arg_regs(target->abi, &fp_abi_count);
+
+            size_t gpr_idx = 0;
+            size_t fp_idx = 0;
+
             for (size_t p = 0; p < mfn->param_count; p++) {
                 X86_Reg vreg = lower_reg(mfn->param_regs[p]);
-                if (p < abi_arg_count) {
-                    X86_Reg preg = x86_reg_phys(abi_args[p], vreg.size);
-                    if (vreg.is_virtual || vreg.phys_reg != preg.phys_reg) {
-                        X86_Instruction copy_param = {
-                            .opcode = X86_OPC_MOV,
+                bool is_fp = (mfn->param_regs[p].reg_class == NY_REG_CLASS_FP32 || mfn->param_regs[p].reg_class == NY_REG_CLASS_FP64);
+                X86_Opcode mov_opc = is_fp ? ((vreg.size == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD) : X86_OPC_MOV;
+
+                if (target->abi == NY_ABI_WINDOWS_X64) {
+                    if (p < 4) {
+                        X86_Phys_Reg preg_id = is_fp ? fp_args[p] : gpr_args[p];
+                        X86_Reg preg = x86_reg_phys(preg_id, vreg.size);
+                        if (vreg.is_virtual || vreg.phys_reg != preg.phys_reg) {
+                            X86_Instruction copy_param = {
+                                .opcode = (uint16_t)mov_opc,
+                                .size = vreg.size,
+                                .cond = X86_COND_NONE,
+                                .op_count = 2,
+                                .ops = { x86_op_reg(vreg), x86_op_reg(preg) }
+                            };
+                            x86_block_append_inst(xblk, copy_param);
+                        }
+                    } else {
+                        int32_t offset = 16 + 32 + (int32_t)((p - 4) * 8);
+                        X86_Mem arg_mem = {
+                            .base = x86_reg_phys(X86_RBP, 8),
+                            .index = (X86_Reg){0},
+                            .scale = 0,
+                            .disp = offset,
+                            .is_rip_relative = false,
+                            .symbol = {0}
+                        };
+                        X86_Instruction load_param = {
+                            .opcode = (uint16_t)mov_opc,
                             .size = vreg.size,
                             .cond = X86_COND_NONE,
                             .op_count = 2,
-                            .ops = { x86_op_reg(vreg), x86_op_reg(preg) }
+                            .ops = { x86_op_reg(vreg), x86_op_mem(arg_mem) }
                         };
-                        x86_block_append_inst(xblk, copy_param);
+                        x86_block_append_inst(xblk, load_param);
                     }
                 } else {
-                    int32_t offset = 0;
-                    if (target->abi == NY_ABI_WINDOWS_X64) {
-                        offset = 16 + 32 + (int32_t)((p - 4) * 8);
+                    if (is_fp) {
+                        if (fp_idx < fp_abi_count) {
+                            X86_Reg preg = x86_reg_phys(fp_args[fp_idx++], vreg.size);
+                            if (vreg.is_virtual || vreg.phys_reg != preg.phys_reg) {
+                                X86_Instruction copy_param = {
+                                    .opcode = (uint16_t)mov_opc,
+                                    .size = vreg.size,
+                                    .cond = X86_COND_NONE,
+                                    .op_count = 2,
+                                    .ops = { x86_op_reg(vreg), x86_op_reg(preg) }
+                                };
+                                x86_block_append_inst(xblk, copy_param);
+                            }
+                        } else {
+                            int32_t offset = 16 + (int32_t)((p - 6) * 8);
+                            X86_Mem arg_mem = {
+                                .base = x86_reg_phys(X86_RBP, 8),
+                                .index = (X86_Reg){0},
+                                .scale = 0,
+                                .disp = offset,
+                                .is_rip_relative = false,
+                                .symbol = {0}
+                            };
+                            X86_Instruction load_param = {
+                                .opcode = (uint16_t)mov_opc,
+                                .size = vreg.size,
+                                .cond = X86_COND_NONE,
+                                .op_count = 2,
+                                .ops = { x86_op_reg(vreg), x86_op_mem(arg_mem) }
+                            };
+                            x86_block_append_inst(xblk, load_param);
+                        }
                     } else {
-                        offset = 16 + (int32_t)((p - 6) * 8);
+                        if (gpr_idx < gpr_abi_count) {
+                            X86_Reg preg = x86_reg_phys(gpr_args[gpr_idx++], vreg.size);
+                            if (vreg.is_virtual || vreg.phys_reg != preg.phys_reg) {
+                                X86_Instruction copy_param = {
+                                    .opcode = X86_OPC_MOV,
+                                    .size = vreg.size,
+                                    .cond = X86_COND_NONE,
+                                    .op_count = 2,
+                                    .ops = { x86_op_reg(vreg), x86_op_reg(preg) }
+                                };
+                                x86_block_append_inst(xblk, copy_param);
+                            }
+                        } else {
+                            int32_t offset = 16 + (int32_t)((p - 6) * 8);
+                            X86_Mem arg_mem = {
+                                .base = x86_reg_phys(X86_RBP, 8),
+                                .index = (X86_Reg){0},
+                                .scale = 0,
+                                .disp = offset,
+                                .is_rip_relative = false,
+                                .symbol = {0}
+                            };
+                            X86_Instruction load_param = {
+                                .opcode = X86_OPC_MOV,
+                                .size = vreg.size,
+                                .cond = X86_COND_NONE,
+                                .op_count = 2,
+                                .ops = { x86_op_reg(vreg), x86_op_mem(arg_mem) }
+                            };
+                            x86_block_append_inst(xblk, load_param);
+                        }
                     }
-                    X86_Mem arg_mem = {
-                        .base = x86_reg_phys(X86_RBP, 8),
-                        .index = (X86_Reg){0},
-                        .scale = 0,
-                        .disp = offset,
-                        .is_rip_relative = false,
-                        .symbol = {0}
-                    };
-                    X86_Instruction load_param = {
-                        .opcode = X86_OPC_MOV,
-                        .size = vreg.size,
-                        .cond = X86_COND_NONE,
-                        .op_count = 2,
-                        .ops = { x86_op_reg(vreg), x86_op_mem(arg_mem) }
-                    };
-                    x86_block_append_inst(xblk, load_param);
                 }
             }
         }

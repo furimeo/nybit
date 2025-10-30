@@ -43,8 +43,22 @@ void test_x86_register_and_abi_properties(void) {
     TEST_ASSERT_EQ(win_args[2], X86_R8);
     TEST_ASSERT_EQ(win_args[3], X86_R9);
 
-    TEST_ASSERT_EQ(x86_abi_ret_reg(NY_ABI_SYSV_AMD64, 8), X86_RAX);
-    TEST_ASSERT_EQ(x86_abi_ret_reg(NY_ABI_WINDOWS_X64, 4), X86_RAX);
+    TEST_ASSERT_EQ(x86_abi_ret_reg(NY_ABI_SYSV_AMD64, 8, false), X86_RAX);
+    TEST_ASSERT_EQ(x86_abi_ret_reg(NY_ABI_WINDOWS_X64, 4, false), X86_RAX);
+    TEST_ASSERT_EQ(x86_abi_ret_reg(NY_ABI_SYSV_AMD64, 8, true), X86_XMM0);
+    TEST_ASSERT_EQ(x86_abi_ret_reg(NY_ABI_WINDOWS_X64, 4, true), X86_XMM0);
+
+    size_t sysv_fp_count = 0;
+    const X86_Phys_Reg *sysv_fp_args = x86_abi_fp_arg_regs(NY_ABI_SYSV_AMD64, &sysv_fp_count);
+    TEST_ASSERT_EQ(sysv_fp_count, 8);
+    TEST_ASSERT_EQ(sysv_fp_args[0], X86_XMM0);
+    TEST_ASSERT_EQ(sysv_fp_args[7], X86_XMM7);
+
+    size_t win_fp_count = 0;
+    const X86_Phys_Reg *win_fp_args = x86_abi_fp_arg_regs(NY_ABI_WINDOWS_X64, &win_fp_count);
+    TEST_ASSERT_EQ(win_fp_count, 4);
+    TEST_ASSERT_EQ(win_fp_args[0], X86_XMM0);
+    TEST_ASSERT_EQ(win_fp_args[3], X86_XMM3);
 
     TEST_ASSERT(x86_abi_is_callee_saved(NY_ABI_SYSV_AMD64, X86_RBX));
     TEST_ASSERT(x86_abi_is_callee_saved(NY_ABI_SYSV_AMD64, X86_RBP));

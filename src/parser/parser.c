@@ -431,6 +431,9 @@ static bool parse_function(Ny_Parser *p) {
                             Ny_Function_ID fid = ny_module_create_function(p->module, d_name, NY_TYPE_I32, NY_CC_DEFAULT);
                             tgt = ny_module_get_function(p->module, fid);
                         }
+                        if (tgt && op == NY_OPCODE_CALL) {
+                            res_type = tgt->return_type;
+                        }
                         if (op_count < 32) ops_buf[op_count++] = ny_operand_function(tgt ? tgt->id : NY_INVALID_FUNCTION);
                     }
                 } else if (p->curr.kind == NY_TOK_INT) {

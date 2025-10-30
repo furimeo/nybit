@@ -8,8 +8,10 @@ void x86_frame_layout(X86_Stack_Frame *frame, const Ny_Machine_Function *mfn, Ny
     frame->has_call = false;
     frame->callee_saved_mask = 0;
 
-    size_t abi_arg_reg_count = 0;
-    x86_abi_arg_regs(abi, &abi_arg_reg_count);
+    size_t gpr_abi_count = 0;
+    x86_abi_arg_regs(abi, &gpr_abi_count);
+    size_t fp_abi_count = 0;
+    x86_abi_fp_arg_regs(abi, &fp_abi_count);
 
     size_t max_outgoing_stack_args = 0;
 
@@ -18,11 +20,33 @@ void x86_frame_layout(X86_Stack_Frame *frame, const Ny_Machine_Function *mfn, Ny
         if (inst->opcode == NY_MOPC_CALL) {
             frame->has_call = true;
             size_t call_args = (inst->op_count > 1) ? (inst->op_count - 1) : 0;
-            if (call_args > abi_arg_reg_count) {
-                size_t stack_args = call_args - abi_arg_reg_count;
-                if (stack_args > max_outgoing_stack_args) {
-                    max_outgoing_stack_args = stack_args;
+            const Ny_Machine_Operand *ops = ny_mfunc_get_operands(mfn, inst);
+            size_t stack_args = 0;
+
+            if (abi == NY_ABI_WINDOWS_X64) {
+                if (call_args > 4) {
+                    stack_args = call_args - 4;
                 }
+            } else {
+                size_t gpr_idx = 0;
+                size_t fp_idx = 0;
+                for (size_t a = 1; a < inst->op_count; a++) {
+                    bool is_fp = false;
+                    if (ops[a].kind == NY_MOP_KIND_REG) {
+                        is_fp = (ops[a].reg.reg_class == NY_REG_CLASS_FP32 || ops[a].reg.reg_class == NY_REG_CLASS_FP64);
+                    }
+                    if (is_fp) {
+                        if (fp_idx < fp_abi_count) fp_idx++;
+                        else stack_args++;
+                    } else {
+                        if (gpr_idx < gpr_abi_count) gpr_idx++;
+                        else stack_args++;
+                    }
+                }
+            }
+
+            if (stack_args > max_outgoing_stack_args) {
+                max_outgoing_stack_args = stack_args;
             }
         }
 

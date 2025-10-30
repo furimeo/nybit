@@ -1146,3 +1146,90 @@ void test_object_e2e_abi_scalar_widths(void) {
     remove(exe_path);
 }
 
+void test_object_e2e_abi_fp_and_mixed(void) {
+    FILE *fc = fopen("bin/test_e2e_fp_host.c", "w");
+    TEST_ASSERT(fc != nullptr);
+    fputs(
+        "#include <stdint.h>\n"
+        "#include <math.h>\n"
+        "float host_get_f32(void) { return 7.0f; }\n"
+        "double host_get_f64(void) { return 20.0; }\n"
+        "float host_add_f32(float a, float b) { return a + b; }\n"
+        "double host_add_f64(double a, double b) { return a + b; }\n"
+        "int32_t host_mixed(int32_t a, double b, int32_t c, float d) {\n"
+        "    return a + (int32_t)b + c + (int32_t)d;\n"
+        "}\n",
+        fc
+    );
+    fclose(fc);
+
+    int c_build = system("gcc -c bin/test_e2e_fp_host.c -o bin/test_e2e_fp_host.o");
+    TEST_ASSERT_EQ(c_build, 0);
+
+    const char *src =
+        "@function host_get_f32() -> f32;\n"
+        "@function host_get_f64() -> f64;\n"
+        "@function host_add_f32(%a: f32, %b: f32) -> f32;\n"
+        "@function host_add_f64(%a: f64, %b: f64) -> f64;\n"
+        "@function host_mixed(%a: i32, %b: f64, %c: i32, %d: f32) -> i32;\n"
+        "\n"
+        "@function main() -> i32;\n"
+        ".entry;\n"
+        "    %v1 = const 10;\n"
+        "    %v2 = call @host_get_f64;\n"
+        "    %v3 = const 5;\n"
+        "    %v4 = call @host_get_f32;\n"
+        "    %res = call @host_mixed, %v1, %v2, %v3, %v4;\n"
+        "    @return %res;\n"
+        ";;\n";
+
+    const Ny_Target *target = ny_target_get_default();
+    const char *ny_obj = "bin/test_e2e_fp.obj";
+    const char *exe_path = "bin/test_e2e_fp.exe";
+
+    TEST_ASSERT(compile_source_to_obj(src, ny_obj, target));
+
+    const char *objs[2] = { ny_obj, "bin/test_e2e_fp_host.o" };
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    bool link_ok = ny_link_executable_with_extra(objs, 2, exe_path, target, &diags);
+    TEST_ASSERT(link_ok);
+    ny_diagnostic_list_destroy(&diags);
+
+    int exit_code = system("bin\\test_e2e_fp.exe");
+    TEST_ASSERT_EQ(exit_code, 42);
+
+    remove("bin/test_e2e_fp_host.c");
+    remove("bin/test_e2e_fp_host.o");
+    remove(ny_obj);
+    remove(exe_path);
+}
+
+void test_target_unsupported_types(void) {
+    const char *src_i128 =
+        "@function test_i128(%x: i128) -> i128;\n"
+        ".entry;\n"
+        "    @return %x;\n"
+        ";;\n";
+
+    Ny_Context ctx;
+    ny_context_init(&ctx, "test_unsupported");
+
+    Ny_Parser parser;
+    ny_parser_init(&parser, &ctx.module, src_i128, strlen(src_i128), &ctx.arena);
+    TEST_ASSERT(ny_parse_module(&parser));
+    ny_parser_destroy(&parser);
+
+    Ny_Machine_Module mmod;
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    bool mir_ok = ny_ir_lower_to_mir(&ctx.module, &mmod, &diags);
+    TEST_ASSERT(!mir_ok);
+    TEST_ASSERT(diags.count > 0);
+    TEST_ASSERT(strstr(diags.items[0].message, "does not support type 'i128'") != nullptr);
+
+    ny_diagnostic_list_destroy(&diags);
+    ny_mmod_destroy(&mmod);
+    ny_context_destroy(&ctx);
+}
+
