@@ -230,3 +230,45 @@ void test_x86_e2e_pipeline(void) {
     ny_mmod_destroy(&mmod);
     ny_context_destroy(&ctx);
 }
+
+void test_aggregate_type_layout(void) {
+    Ny_Type_Table tt;
+    ny_type_table_init(&tt);
+
+    /* struct Point { int32_t x; int32_t y; } -> size 8, align 4 */
+    Ny_Type_ID f_point[2] = { NY_TYPE_I32, NY_TYPE_I32 };
+    Ny_Type_ID t_point = ny_type_table_add_struct(&tt, "Point", f_point, 2);
+    TEST_ASSERT(ny_type_is_aggregate(&tt, t_point));
+    TEST_ASSERT_EQ(ny_type_size(&tt, t_point), 8);
+    TEST_ASSERT_EQ(ny_type_align(&tt, t_point), 4);
+    TEST_ASSERT_EQ(ny_type_struct_field_offset(&tt, t_point, 0), 0);
+    TEST_ASSERT_EQ(ny_type_struct_field_offset(&tt, t_point, 1), 4);
+    TEST_ASSERT_EQ(ny_type_struct_field_type(&tt, t_point, 0), NY_TYPE_I32);
+    TEST_ASSERT_EQ(ny_type_struct_field_type(&tt, t_point, 1), NY_TYPE_I32);
+
+    /* struct Mixed { int8_t a; int64_t b; int32_t c; } -> size 24, align 8 */
+    Ny_Type_ID f_mixed[3] = { NY_TYPE_I8, NY_TYPE_I64, NY_TYPE_I32 };
+    Ny_Type_ID t_mixed = ny_type_table_add_struct(&tt, "Mixed", f_mixed, 3);
+    TEST_ASSERT(ny_type_is_aggregate(&tt, t_mixed));
+    TEST_ASSERT_EQ(ny_type_size(&tt, t_mixed), 24);
+    TEST_ASSERT_EQ(ny_type_align(&tt, t_mixed), 8);
+    TEST_ASSERT_EQ(ny_type_struct_field_offset(&tt, t_mixed, 0), 0);
+    TEST_ASSERT_EQ(ny_type_struct_field_offset(&tt, t_mixed, 1), 8);
+    TEST_ASSERT_EQ(ny_type_struct_field_offset(&tt, t_mixed, 2), 16);
+
+    /* struct PtrField { void *p; int32_t val; } -> size 16, align 8 */
+    Ny_Type_ID f_ptr[2] = { NY_TYPE_PTR, NY_TYPE_I32 };
+    Ny_Type_ID t_ptr = ny_type_table_add_struct(&tt, "PtrField", f_ptr, 2);
+    TEST_ASSERT_EQ(ny_type_size(&tt, t_ptr), 16);
+    TEST_ASSERT_EQ(ny_type_align(&tt, t_ptr), 8);
+    TEST_ASSERT_EQ(ny_type_struct_field_offset(&tt, t_ptr, 0), 0);
+    TEST_ASSERT_EQ(ny_type_struct_field_offset(&tt, t_ptr, 1), 8);
+
+    /* Array [5]i32 -> size 20, align 4 */
+    Ny_Type_ID t_arr = ny_type_table_add_array(&tt, NY_TYPE_I32, 5);
+    TEST_ASSERT(ny_type_is_aggregate(&tt, t_arr));
+    TEST_ASSERT_EQ(ny_type_size(&tt, t_arr), 20);
+    TEST_ASSERT_EQ(ny_type_align(&tt, t_arr), 4);
+
+    ny_type_table_destroy(&tt);
+}

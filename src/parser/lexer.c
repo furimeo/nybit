@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/parser.h"
 
@@ -101,6 +101,8 @@ Ny_Token ny_lexer_next(Ny_Lexer *lex) {
     case ')': advance_char(lex); tok.kind = NY_TOK_RPAREN; tok.text = ny_str(")"); return tok;
     case '[': advance_char(lex); tok.kind = NY_TOK_LBRACKET; tok.text = ny_str("["); return tok;
     case ']': advance_char(lex); tok.kind = NY_TOK_RBRACKET; tok.text = ny_str("]"); return tok;
+    case '{': advance_char(lex); tok.kind = NY_TOK_LBRACE; tok.text = ny_str("{"); return tok;
+    case '}': advance_char(lex); tok.kind = NY_TOK_RBRACE; tok.text = ny_str("}"); return tok;
     }
 
     // Directives: @name

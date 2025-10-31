@@ -1233,3 +1233,98 @@ void test_target_unsupported_types(void) {
     ny_context_destroy(&ctx);
 }
 
+void test_object_e2e_aggregate_values(void) {
+    FILE *fc = fopen("bin/test_e2e_agg_host.c", "w");
+    TEST_ASSERT(fc != nullptr);
+    fputs(
+        "#include <stdint.h>\n"
+        "typedef struct { int32_t x; int32_t y; } Point;\n"
+        "typedef struct { int64_t a; int64_t b; int64_t c; } BigData;\n"
+        "\n"
+        "int32_t host_sum_point(Point *p) {\n"
+        "    return p->x + p->y;\n"
+        "}\n"
+        "void host_fill_point(Point *p, int32_t x, int32_t y) {\n"
+        "    p->x = x;\n"
+        "    p->y = y;\n"
+        "}\n"
+        "int64_t host_sum_big(BigData *b) {\n"
+        "    return b->a + b->b + b->c;\n"
+        "}\n"
+        "int32_t host_point_val(Point p) {\n"
+        "    return p.x * 2 + p.y;\n"
+        "}\n",
+        fc
+    );
+    fclose(fc);
+
+    int c_build = system("gcc -c bin/test_e2e_agg_host.c -o bin/test_e2e_agg_host.o");
+    TEST_ASSERT_EQ(c_build, 0);
+
+    const char *src =
+        "@type Point = struct { x: i32, y: i32 };\n"
+        "@type BigData = struct { a: i64, b: i64, c: i64 };\n"
+        "\n"
+        "@global @readonly @k_point: Point = 15;\n" /* k_point.x initialized with 15 */
+        "\n"
+        "@function host_sum_point(%p: ptr) -> i32;\n"
+        "@function host_fill_point(%p: ptr, %x: i32, %y: i32) -> void;\n"
+        "@function host_sum_big(%b: ptr) -> i64;\n"
+        "@function host_point_val(%p: i64) -> i32;\n"
+        "\n"
+        "@function main() -> i32;\n"
+        ".entry;\n"
+        "    %pt = stack_slot 8, 4;\n"
+        "    %c20 = const 20;\n"
+        "    %c7 = const 7;\n"
+        "    call @host_fill_point, %pt, %c20, %c7;\n"
+        "    %s1 = call @host_sum_point, %pt;\n" /* 27 */
+        "\n"
+        "    %big = stack_slot 24, 8;\n"
+        "    %off_a = addr_offset %big, 0;\n"
+        "    %c5 = const 5;\n"
+        "    store %off_a, %c5;\n"
+        "    %off_b = addr_offset %big, 8;\n"
+        "    %c8 = const 8;\n"
+        "    store %off_b, %c8;\n"
+        "    %off_c = addr_offset %big, 16;\n"
+        "    %c2 = const 2;\n"
+        "    store %off_c, %c2;\n"
+        "    %s2_64 = call @host_sum_big, %big;\n" /* 5 + 8 + 2 = 15 */
+        "    %s2 = truncate %s2_64;\n"
+        "\n"
+        "    %p_k = global_addr @k_point;\n"
+        "    %k_val = load %p_k;\n" /* 15 */
+        "    %p_pt_val = load %pt;\n" /* Point loaded into 64-bit scalar: (7 << 32) | 20 */
+        "    %pv_res = call @host_point_val, %p_pt_val;\n" /* 20 * 2 + 7 = 47 */
+        "\n"
+        "    %tmp1 = add %s1, %s2;\n" /* 27 + 15 = 42 */
+        "    %tmp2 = add %tmp1, %k_val;\n" /* 42 + 15 = 57 */
+        "    %tmp3 = add %tmp2, %pv_res;\n" /* 57 + 47 = 104 */
+        "    %c62 = const 62;\n"
+        "    %res = sub %tmp3, %c62;\n" /* 104 - 62 = 42 */
+        "    @return %res;\n"
+        ";;\n";
+
+    const Ny_Target *target = ny_target_get_default();
+    const char *ny_obj = "bin/test_e2e_agg.obj";
+    const char *exe_path = "bin/test_e2e_agg.exe";
+
+    TEST_ASSERT(compile_source_to_obj(src, ny_obj, target));
+
+    const char *objs[2] = { ny_obj, "bin/test_e2e_agg_host.o" };
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    bool link_ok = ny_link_executable_with_extra(objs, 2, exe_path, target, &diags);
+    TEST_ASSERT(link_ok);
+    ny_diagnostic_list_destroy(&diags);
+
+    int exit_code = system("bin\\test_e2e_agg.exe");
+    TEST_ASSERT_EQ(exit_code, 42);
+
+    remove("bin/test_e2e_agg_host.c");
+    remove("bin/test_e2e_agg_host.o");
+    remove(ny_obj);
+    remove(exe_path);
+}
+

@@ -37,6 +37,7 @@ typedef struct Ny_Type {
     uint16_t vector_lanes;
     uint32_t array_count;
     Ny_Type_ID *field_types;
+    uint32_t *field_offsets;
     size_t field_count;
     Ny_String name;
 } Ny_Type;
@@ -52,12 +53,17 @@ void ny_type_table_destroy(Ny_Type_Table *tt);
 Ny_Type_ID ny_type_table_add_vector(Ny_Type_Table *tt, Ny_Type_ID elem, uint16_t lanes);
 Ny_Type_ID ny_type_table_add_pointer(Ny_Type_Table *tt, Ny_Type_ID pointee);
 Ny_Type_ID ny_type_table_add_array(Ny_Type_Table *tt, Ny_Type_ID elem, uint32_t count);
+Ny_Type_ID ny_type_table_add_struct(Ny_Type_Table *tt, const char *name, const Ny_Type_ID *fields, size_t field_count);
 const Ny_Type *ny_type_get(const Ny_Type_Table *tt, Ny_Type_ID id);
 const char *ny_type_name(const Ny_Type_Table *tt, Ny_Type_ID id);
 uint32_t ny_type_size(const Ny_Type_Table *tt, Ny_Type_ID id);
+uint32_t ny_type_align(const Ny_Type_Table *tt, Ny_Type_ID id);
 bool ny_type_is_integer(Ny_Type_ID id);
 bool ny_type_is_float(Ny_Type_ID id);
 bool ny_type_is_vector(const Ny_Type_Table *tt, Ny_Type_ID id);
+bool ny_type_is_aggregate(const Ny_Type_Table *tt, Ny_Type_ID id);
+uint32_t ny_type_struct_field_offset(const Ny_Type_Table *tt, Ny_Type_ID id, size_t field_idx);
+Ny_Type_ID ny_type_struct_field_type(const Ny_Type_Table *tt, Ny_Type_ID id, size_t field_idx);
 
 /* Values & Operands */
 

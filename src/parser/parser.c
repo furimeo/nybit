@@ -83,6 +83,15 @@ static Ny_Type_ID lookup_type(Ny_Module *mod, Ny_String name) {
             }
         }
     }
+
+    /* Check existing types registered in module type table */
+    for (size_t i = 0; i < mod->types.count; i++) {
+        const Ny_Type *t = &mod->types.types[i];
+        if (t->name.data && ny_str_eq(t->name, name)) {
+            return (Ny_Type_ID)i;
+        }
+    }
+
     return NY_INVALID_TYPE;
 }
 
@@ -478,6 +487,10 @@ static bool parse_function(Ny_Parser *p) {
 
             if (op >= NY_OPCODE_CMP_EQ && op <= NY_OPCODE_FCMP_GE) {
                 res_type = NY_TYPE_I8;
+            } else if (op == NY_OPCODE_STACK_SLOT || op == NY_OPCODE_STACK_ADDR ||
+                       op == NY_OPCODE_ADDR || op == NY_OPCODE_ADDR_OFFSET ||
+                       op == NY_OPCODE_GLOBAL_ADDR) {
+                res_type = NY_TYPE_PTR;
             }
 
             Ny_Value_ID res_id = ny_function_create_value(fn, res_type, NY_VAL_INSTRUCTION, NY_INVALID_INST, 0, res_name);
@@ -786,6 +799,79 @@ static bool parse_global(Ny_Parser *p) {
     return true;
 }
 
+static bool parse_type_decl(Ny_Parser *p) {
+    advance_tok(p); /* consume @type */
+
+    if (p->curr.kind != NY_TOK_IDENT) {
+        report_error(p, "expected type name after @type", p->curr.line, p->curr.col);
+        return false;
+    }
+    Ny_Token name_tok = advance_tok(p);
+
+    if (!expect_tok(p, NY_TOK_EQUAL)) {
+        return false;
+    }
+
+    if (p->curr.kind != NY_TOK_IDENT || !ny_str_eq_cstr(p->curr.text, "struct")) {
+        report_error(p, "expected 'struct' in type definition", p->curr.line, p->curr.col);
+        return false;
+    }
+    advance_tok(p); /* consume 'struct' */
+
+    if (!expect_tok(p, NY_TOK_LBRACE)) {
+        return false;
+    }
+
+    Ny_Type_ID field_types[64];
+    size_t field_count = 0;
+
+    while (p->curr.kind != NY_TOK_RBRACE && p->curr.kind != NY_TOK_EOF) {
+        if (p->curr.kind != NY_TOK_IDENT) {
+            report_error(p, "expected field name in struct definition", p->curr.line, p->curr.col);
+            return false;
+        }
+        advance_tok(p); /* consume field name */
+
+        if (!expect_tok(p, NY_TOK_COLON)) {
+            return false;
+        }
+
+        if (p->curr.kind != NY_TOK_IDENT) {
+            report_error(p, "expected field type in struct definition", p->curr.line, p->curr.col);
+            return false;
+        }
+        Ny_Token ftype_tok = advance_tok(p);
+        Ny_Type_ID ftype = lookup_type(p->module, ftype_tok.text);
+        if (ftype == NY_INVALID_TYPE) {
+            report_error(p, "unknown field type in struct definition", ftype_tok.line, ftype_tok.col);
+            return false;
+        }
+
+        if (field_count < 64) {
+            field_types[field_count++] = ftype;
+        }
+
+        if (p->curr.kind == NY_TOK_COMMA) {
+            advance_tok(p);
+        } else if (p->curr.kind != NY_TOK_RBRACE) {
+            report_error(p, "expected ',' or '}' in struct definition", p->curr.line, p->curr.col);
+            return false;
+        }
+    }
+
+    if (!expect_tok(p, NY_TOK_RBRACE)) {
+        return false;
+    }
+    if (!expect_tok(p, NY_TOK_SEMICOLON)) {
+        return false;
+    }
+
+    char name_buf[128];
+    snprintf(name_buf, sizeof(name_buf), "%.*s", (int)name_tok.text.len, name_tok.text.data);
+    ny_type_table_add_struct(&p->module->types, name_buf, field_types, field_count);
+    return true;
+}
+
 bool ny_parse_module(Ny_Parser *p) {
     while (p->curr.kind != NY_TOK_EOF) {
         if (p->curr.kind == NY_TOK_DIRECTIVE && ny_str_eq_cstr(p->curr.text, "function")) {
@@ -794,6 +880,10 @@ bool ny_parse_module(Ny_Parser *p) {
             }
         } else if (p->curr.kind == NY_TOK_DIRECTIVE && ny_str_eq_cstr(p->curr.text, "global")) {
             if (!parse_global(p)) {
+                return false;
+            }
+        } else if (p->curr.kind == NY_TOK_DIRECTIVE && ny_str_eq_cstr(p->curr.text, "type")) {
+            if (!parse_type_decl(p)) {
                 return false;
             }
         } else if (p->curr.kind == NY_TOK_SEMICOLON) {

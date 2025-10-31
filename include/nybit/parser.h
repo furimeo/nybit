@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #ifndef NYBIT_PARSER_H
 #define NYBIT_PARSER_H
@@ -24,6 +24,8 @@ typedef enum Ny_Token_Kind {
     NY_TOK_RPAREN,
     NY_TOK_LBRACKET,
     NY_TOK_RBRACKET,
+    NY_TOK_LBRACE,
+    NY_TOK_RBRACE,
 } Ny_Token_Kind;
 
 typedef struct Ny_Token {
