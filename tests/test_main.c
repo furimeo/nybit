@@ -50,6 +50,7 @@ void test_x86_stack_frame_and_addressing(void);
 void test_x86_instruction_selection(void);
 void test_x86_e2e_pipeline(void);
 void test_aggregate_type_layout(void);
+void test_aggregate_abi_classification(void);
 
 void test_regalloc_arithmetic_no_spill(void);
 void test_regalloc_high_pressure_and_spill(void);
@@ -84,6 +85,7 @@ void test_object_e2e_abi_stack_arguments(void);
 void test_object_e2e_abi_scalar_widths(void);
 void test_object_e2e_abi_fp_and_mixed(void);
 void test_object_e2e_aggregate_values(void);
+void test_object_e2e_aggregate_abi(void);
 void test_target_unsupported_types(void);
 
 void test_nygen_compile_raw_ir(void);
@@ -144,6 +146,7 @@ int main(void) {
     RUN_TEST(test_x86_instruction_selection);
     RUN_TEST(test_x86_e2e_pipeline);
     RUN_TEST(test_aggregate_type_layout);
+    RUN_TEST(test_aggregate_abi_classification);
 
     RUN_TEST(test_regalloc_arithmetic_no_spill);
     RUN_TEST(test_regalloc_high_pressure_and_spill);
@@ -178,6 +181,7 @@ int main(void) {
     RUN_TEST(test_object_e2e_abi_scalar_widths);
     RUN_TEST(test_object_e2e_abi_fp_and_mixed);
     RUN_TEST(test_object_e2e_aggregate_values);
+    RUN_TEST(test_object_e2e_aggregate_abi);
     RUN_TEST(test_target_unsupported_types);
 
     RUN_TEST(test_nygen_compile_raw_ir);

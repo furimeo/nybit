@@ -272,3 +272,70 @@ void test_aggregate_type_layout(void) {
 
     ny_type_table_destroy(&tt);
 }
+
+void test_aggregate_abi_classification(void) {
+    Ny_Type_Table tt;
+    ny_type_table_init(&tt);
+
+    /* 1. Small integer struct: { i32, i32 } -> 8 bytes */
+    Ny_Type_ID f_p2[2] = { NY_TYPE_I32, NY_TYPE_I32 };
+    Ny_Type_ID t_p2 = ny_type_table_add_struct(&tt, "Point2D", f_p2, 2);
+
+    Ny_X86_Aggregate_ABI win_p2 = x86_abi_classify_aggregate(&tt, t_p2, NY_ABI_WINDOWS_X64);
+    TEST_ASSERT_EQ(win_p2.size, 8);
+    TEST_ASSERT(!win_p2.pass_by_ref);
+    TEST_ASSERT(!win_p2.return_sret);
+    TEST_ASSERT_EQ(win_p2.eightbyte_count, 1);
+    TEST_ASSERT_EQ(win_p2.eightbytes[0], NY_X86_CLASS_INTEGER);
+
+    Ny_X86_Aggregate_ABI sysv_p2 = x86_abi_classify_aggregate(&tt, t_p2, NY_ABI_SYSV_AMD64);
+    TEST_ASSERT_EQ(sysv_p2.size, 8);
+    TEST_ASSERT(!sysv_p2.pass_by_ref);
+    TEST_ASSERT(!sysv_p2.return_sret);
+    TEST_ASSERT_EQ(sysv_p2.eightbyte_count, 1);
+    TEST_ASSERT_EQ(sysv_p2.eightbytes[0], NY_X86_CLASS_INTEGER);
+
+    /* 2. Small float struct: { f32, f32 } -> 8 bytes */
+    Ny_Type_ID f_fp2[2] = { NY_TYPE_F32, NY_TYPE_F32 };
+    Ny_Type_ID t_fp2 = ny_type_table_add_struct(&tt, "FloatPoint2D", f_fp2, 2);
+
+    Ny_X86_Aggregate_ABI win_fp2 = x86_abi_classify_aggregate(&tt, t_fp2, NY_ABI_WINDOWS_X64);
+    TEST_ASSERT(!win_fp2.pass_by_ref);
+    TEST_ASSERT(!win_fp2.return_sret);
+    TEST_ASSERT_EQ(win_fp2.eightbytes[0], NY_X86_CLASS_INTEGER);
+
+    Ny_X86_Aggregate_ABI sysv_fp2 = x86_abi_classify_aggregate(&tt, t_fp2, NY_ABI_SYSV_AMD64);
+    TEST_ASSERT(!sysv_fp2.pass_by_ref);
+    TEST_ASSERT(!sysv_fp2.return_sret);
+    TEST_ASSERT_EQ(sysv_fp2.eightbyte_count, 1);
+    TEST_ASSERT_EQ(sysv_fp2.eightbytes[0], NY_X86_CLASS_SSE);
+
+    /* 3. Small double struct: { f64, f64 } -> 16 bytes */
+    Ny_Type_ID f_vec2d[2] = { NY_TYPE_F64, NY_TYPE_F64 };
+    Ny_Type_ID t_vec2d = ny_type_table_add_struct(&tt, "Vec2D", f_vec2d, 2);
+
+    Ny_X86_Aggregate_ABI win_vec2d = x86_abi_classify_aggregate(&tt, t_vec2d, NY_ABI_WINDOWS_X64);
+    TEST_ASSERT(win_vec2d.pass_by_ref);
+    TEST_ASSERT(win_vec2d.return_sret);
+
+    Ny_X86_Aggregate_ABI sysv_vec2d = x86_abi_classify_aggregate(&tt, t_vec2d, NY_ABI_SYSV_AMD64);
+    TEST_ASSERT(!sysv_vec2d.pass_by_ref);
+    TEST_ASSERT(!sysv_vec2d.return_sret);
+    TEST_ASSERT_EQ(sysv_vec2d.eightbyte_count, 2);
+    TEST_ASSERT_EQ(sysv_vec2d.eightbytes[0], NY_X86_CLASS_SSE);
+    TEST_ASSERT_EQ(sysv_vec2d.eightbytes[1], NY_X86_CLASS_SSE);
+
+    /* 4. Large struct: { i64, i64, i64 } -> 24 bytes */
+    Ny_Type_ID f_large[3] = { NY_TYPE_I64, NY_TYPE_I64, NY_TYPE_I64 };
+    Ny_Type_ID t_large = ny_type_table_add_struct(&tt, "Large", f_large, 3);
+
+    Ny_X86_Aggregate_ABI win_large = x86_abi_classify_aggregate(&tt, t_large, NY_ABI_WINDOWS_X64);
+    TEST_ASSERT(win_large.pass_by_ref);
+    TEST_ASSERT(win_large.return_sret);
+
+    Ny_X86_Aggregate_ABI sysv_large = x86_abi_classify_aggregate(&tt, t_large, NY_ABI_SYSV_AMD64);
+    TEST_ASSERT(sysv_large.pass_by_ref);
+    TEST_ASSERT(sysv_large.return_sret);
+
+    ny_type_table_destroy(&tt);
+}

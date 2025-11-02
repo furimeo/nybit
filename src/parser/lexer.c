@@ -40,6 +40,18 @@ static void skip_whitespace_and_comments(Ny_Lexer *lex) {
             }
             continue;
         }
+        if (c == '/' && lex->pos + 1 < lex->len && lex->src[lex->pos + 1] == '*') {
+            advance_char(lex);
+            advance_char(lex);
+            while (lex->pos + 1 < lex->len && !(lex->src[lex->pos] == '*' && lex->src[lex->pos + 1] == '/')) {
+                advance_char(lex);
+            }
+            if (lex->pos + 1 < lex->len) {
+                advance_char(lex);
+                advance_char(lex);
+            }
+            continue;
+        }
         break;
     }
 }

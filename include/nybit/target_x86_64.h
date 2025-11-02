@@ -258,6 +258,23 @@ const X86_Phys_Reg *x86_abi_fp_arg_regs(Ny_Target_ABI abi, size_t *out_count);
 X86_Phys_Reg x86_abi_ret_reg(Ny_Target_ABI abi, uint8_t size, bool is_fp);
 bool x86_abi_is_callee_saved(Ny_Target_ABI abi, X86_Phys_Reg reg);
 
+typedef enum Ny_X86_Eightbyte_Class {
+    NY_X86_CLASS_NONE = 0,
+    NY_X86_CLASS_INTEGER,
+    NY_X86_CLASS_SSE,
+    NY_X86_CLASS_MEMORY,
+} Ny_X86_Eightbyte_Class;
+
+typedef struct Ny_X86_Aggregate_ABI {
+    uint32_t size;
+    bool pass_by_ref;
+    bool return_sret;
+    uint8_t eightbyte_count;
+    Ny_X86_Eightbyte_Class eightbytes[2];
+} Ny_X86_Aggregate_ABI;
+
+Ny_X86_Aggregate_ABI x86_abi_classify_aggregate(const Ny_Type_Table *tt, Ny_Type_ID ty, Ny_Target_ABI abi);
+
 /* Lowering */
 bool x86_lower_machine_func(const Ny_Target *target, const Ny_Machine_Function *mfn, void **out_target_fn, Ny_Diagnostic_List *diags);
 bool x86_lower_machine_mod(const Ny_Target *target, const Ny_Machine_Module *mmod, X86_Module *out_x86_mod, Ny_Diagnostic_List *diags);

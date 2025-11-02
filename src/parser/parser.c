@@ -414,7 +414,8 @@ static bool parse_function(Ny_Parser *p) {
                         return false;
                     }
                     if (op_count < 32) ops_buf[op_count++] = ny_operand_value((Ny_Value_ID)val_id);
-                    if (op != NY_OPCODE_CONST && op != NY_OPCODE_CONST_NULL) {
+                    if (op != NY_OPCODE_CONST && op != NY_OPCODE_CONST_NULL &&
+                        op != NY_OPCODE_CALL && op != NY_OPCODE_CALL_INDIRECT) {
                         Ny_Value *v = ny_function_get_value(fn, (Ny_Value_ID)val_id);
                         if (v) res_type = v->type;
                     }
@@ -471,18 +472,15 @@ static bool parse_function(Ny_Parser *p) {
 
                 if (p->curr.kind == NY_TOK_COMMA) {
                     advance_tok(p);
-                } else if (p->curr.kind != NY_TOK_SEMICOLON) {
+                } else if (p->curr.kind == NY_TOK_SEMICOLON) {
+                    advance_tok(p);
+                    break;
+                } else {
                     report_error(p, "expected ',' or ';' after operand", p->curr.line, p->curr.col);
                     map_free(&val_map);
                     map_free(&blk_map);
                     return false;
                 }
-            }
-
-            if (!expect_tok(p, NY_TOK_SEMICOLON)) {
-                map_free(&val_map);
-                map_free(&blk_map);
-                return false;
             }
 
             if (op >= NY_OPCODE_CMP_EQ && op <= NY_OPCODE_FCMP_GE) {
@@ -668,18 +666,15 @@ static bool parse_function(Ny_Parser *p) {
 
                 if (p->curr.kind == NY_TOK_COMMA) {
                     advance_tok(p);
-                } else if (p->curr.kind != NY_TOK_SEMICOLON) {
+                } else if (p->curr.kind == NY_TOK_SEMICOLON) {
+                    advance_tok(p);
+                    break;
+                } else {
                     report_error(p, "expected ',' or ';' after operand", p->curr.line, p->curr.col);
                     map_free(&val_map);
                     map_free(&blk_map);
                     return false;
                 }
-            }
-
-            if (!expect_tok(p, NY_TOK_SEMICOLON)) {
-                map_free(&val_map);
-                map_free(&blk_map);
-                return false;
             }
 
             ny_function_append_instruction(fn, cur_block, op, NY_INVALID_VALUE, ops_buf, op_count, 0);

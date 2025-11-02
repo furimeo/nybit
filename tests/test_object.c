@@ -594,6 +594,7 @@ static bool compile_source_to_obj(const char *src, const char *out_obj_path, con
     Ny_Parser parser;
     ny_parser_init(&parser, &ctx.module, src, strlen(src), &ctx.arena);
     if (!ny_parse_module(&parser)) {
+        if (parser.diag_count > 0) fprintf(stderr, "parse error: %s (line %d, col %d)\n", parser.diagnostics[0].message, parser.diagnostics[0].line, parser.diagnostics[0].col);
         ny_parser_destroy(&parser);
         ny_context_destroy(&ctx);
         return false;
@@ -603,6 +604,7 @@ static bool compile_source_to_obj(const char *src, const char *out_obj_path, con
     Ny_Diagnostic_List val_diags;
     ny_diagnostic_list_init(&val_diags);
     if (!ny_validate_module(&ctx.module, &val_diags)) {
+        if (val_diags.count > 0) fprintf(stderr, "val error: %s\n", val_diags.items[0].message);
         ny_diagnostic_list_destroy(&val_diags);
         ny_context_destroy(&ctx);
         return false;
@@ -1327,4 +1329,187 @@ void test_object_e2e_aggregate_values(void) {
     remove(ny_obj);
     remove(exe_path);
 }
+
+void test_object_e2e_aggregate_abi(void) {
+    FILE *fc = fopen("bin/test_e2e_agg_abi_host.c", "w");
+    TEST_ASSERT(fc != nullptr);
+    fputs(
+        "#include <stdint.h>\n"
+        "typedef struct { int32_t a; int32_t b; } Pair32;\n"
+        "typedef struct { void *ptr; int32_t count; } Slice;\n"
+        "typedef struct { float x; float y; } Float2;\n"
+        "typedef struct { int64_t w; int64_t x; int64_t y; int64_t z; } BigQuad;\n"
+        "\n"
+        "/* 1. Small integer struct by-value pass & return */\n"
+        "Pair32 host_add_pair(Pair32 p, int32_t delta) {\n"
+        "    Pair32 res;\n"
+        "    res.a = p.a + delta;\n"
+        "    res.b = p.b + delta * 2;\n"
+        "    return res;\n"
+        "}\n"
+        "\n"
+        "/* 2. Mixed pointer/integer struct by-value pass & return */\n"
+        "Slice host_make_slice(void *p, int32_t n) {\n"
+        "    Slice s;\n"
+        "    s.ptr = p;\n"
+        "    s.count = n;\n"
+        "    return s;\n"
+        "}\n"
+        "int32_t host_sum_slice(Slice s) {\n"
+        "    int32_t *arr = (int32_t *)s.ptr;\n"
+        "    int32_t sum = 0;\n"
+        "    for (int32_t i = 0; i < s.count; i++) sum += arr[i];\n"
+        "    return sum;\n"
+        "}\n"
+        "\n"
+        "/* 3. Small float struct by-value */\n"
+        "int32_t host_sum_float2(Float2 f) {\n"
+        "    return (int32_t)(f.x + f.y);\n"
+        "}\n"
+        "\n"
+        "/* 4. Large aggregate by-memory / sret */\n"
+        "BigQuad host_compute_big(BigQuad b, int64_t factor) {\n"
+        "    BigQuad res;\n"
+        "    res.w = b.w * factor;\n"
+        "    res.x = b.x * factor;\n"
+        "    res.y = b.y * factor;\n"
+        "    res.z = b.z * factor;\n"
+        "    return res;\n"
+        "}\n"
+        "int64_t host_sum_quad(BigQuad *b) {\n"
+        "    return b->w + b->x + b->y + b->z;\n"
+        "}\n",
+        fc
+    );
+    fclose(fc);
+
+    int c_build = system("gcc -c bin/test_e2e_agg_abi_host.c -o bin/test_e2e_agg_abi_host.o");
+    TEST_ASSERT_EQ(c_build, 0);
+
+    const char *src =
+        "@type Pair32 = struct { a: i32, b: i32 };\n"
+        "@type Slice = struct { ptr: ptr, count: i32 };\n"
+        "@type Float2 = struct { x: f32, y: f32 };\n"
+        "@type BigQuad = struct { w: i64, x: i64, y: i64, z: i64 };\n"
+        "\n"
+        "@function host_add_pair(%p: i64, %delta: i32) -> i64;\n"
+        "@function host_sum_slice(%s_ptr: ptr) -> i32;\n"
+        "@function host_sum_float2(%f: i64) -> i32;\n"
+        "@function host_compute_big(%sret: ptr, %b_in: ptr, %factor: i64) -> void;\n"
+        "@function host_sum_quad(%b: ptr) -> i64;\n"
+        "\n"
+        "@function ny_helper_nested(%p: ptr) -> i32;\n"
+        ".entry;\n"
+        "    %v = load %p;\n"
+        "    %delta = const 5;\n"
+        "    %ret64 = call @host_add_pair, %v, %delta;\n"
+        "    store %p, %ret64;\n"
+        "    %c0 = const 0;\n"
+        "    @return %c0;\n"
+        ";;\n"
+        "\n"
+        "@function main() -> i32;\n"
+        ".entry;\n"
+        "    /* Test 1: Pair32 */\n"
+        "    %pair_slot = stack_slot 8, 4;\n"
+        "    %p_a = addr_offset %pair_slot, 0;\n"
+        "    %c10 = const 10;\n"
+        "    store %p_a, %c10;\n"
+        "    %p_b = addr_offset %pair_slot, 4;\n"
+        "    %c20 = const 20;\n"
+        "    store %p_b, %c20;\n"
+        "\n"
+        "    /* Nested call passing pointer to Pair32, which internally calls host_add_pair */\n"
+        "    call @ny_helper_nested, %pair_slot;\n"
+        "    /* now pair_slot.a = 15, pair_slot.b = 30 */\n"
+        "    %a_new = load %p_a;\n"
+        "    %b_new = load %p_b;\n"
+        "    %p_sum = add %a_new, %b_new;\n" /* 15 + 30 = 45 */
+        "\n"
+        "    /* Test 2: Slice with small integer array */\n"
+        "    %arr_slot = stack_slot 12, 4;\n" /* 3 x i32: [3, 4, 5] */
+        "    %arr0 = addr_offset %arr_slot, 0;\n"
+        "    %c3 = const 3;\n"
+        "    store %arr0, %c3;\n"
+        "    %arr1 = addr_offset %arr_slot, 4;\n"
+        "    %c4 = const 4;\n"
+        "    store %arr1, %c4;\n"
+        "    %arr2 = addr_offset %arr_slot, 8;\n"
+        "    %c5 = const 5;\n"
+        "    store %arr2, %c5;\n"
+        "    %slice_slot = stack_slot 16, 8;\n"
+        "    %sl_ptr = addr_offset %slice_slot, 0;\n"
+        "    store %sl_ptr, %arr_slot;\n"
+        "    %sl_cnt = addr_offset %slice_slot, 8;\n"
+        "    %cnt = const 3;\n"
+        "    store %sl_cnt, %cnt;\n"
+        "    %slice_sum = call @host_sum_slice, %slice_slot;\n" /* 3 + 4 + 5 = 12 */
+        "\n"
+        "    /* Test 3: Float2 */\n"
+        "    %f_slot = stack_slot 8, 4;\n"
+        "    %f_x = addr_offset %f_slot, 0;\n"
+        "    %f_y = addr_offset %f_slot, 4;\n"
+        "    %cf1 = const 0x40400000;\n" /* 3.0f in IEEE-754 */
+        "    store %f_x, %cf1;\n"
+        "    %cf2 = const 0x40800000;\n" /* 4.0f in IEEE-754 */
+        "    store %f_y, %cf2;\n"
+        "    %f_val = load %f_slot;\n"
+        "    %f_int = call @host_sum_float2, %f_val;\n" /* 3.0 + 4.0 = 7 */
+        "\n"
+        "    /* Test 4: BigQuad memory pass & sret return */\n"
+        "    %quad_in = stack_slot 32, 8;\n"
+        "    %qw = addr_offset %quad_in, 0;\n"
+        "    %c1 = const 1;\n"
+        "    store %qw, %c1;\n"
+        "    %qx = addr_offset %quad_in, 8;\n"
+        "    %c2 = const 2;\n"
+        "    store %qx, %c2;\n"
+        "    %qy = addr_offset %quad_in, 16;\n"
+        "    store %qy, %c3;\n"
+        "    %qz = addr_offset %quad_in, 24;\n"
+        "    store %qz, %c4;\n"
+        "\n"
+        "    %quad_out = stack_slot 32, 8;\n"
+        "    %fac = const 2;\n"
+        "    call @host_compute_big, %quad_out, %quad_in, %fac;\n"
+        "    /* quad_out = { 2, 4, 6, 8 }, sum = 20 */\n"
+        "    %quad_sum_64 = call @host_sum_quad, %quad_out;\n"
+        "    %quad_sum = truncate %quad_sum_64;\n" /* 20 */
+        "\n"
+        "    /* Compute combined result to equal 42: */\n"
+        "    /* p_sum = 45 */\n"
+        "    /* slice_sum = 12 */\n"
+        "    /* f_int = 7 */\n"
+        "    /* quad_sum = 20 */\n"
+        "    /* total = 45 + 12 + 7 + 20 = 84 */\n"
+        "    %t1 = add %p_sum, %slice_sum;\n" /* 57 */
+        "    %t2 = add %t1, %f_int;\n" /* 64 */
+        "    %t3 = add %t2, %quad_sum;\n" /* 84 */
+        "    %c42 = const 42;\n"
+        "    %final_res = sub %t3, %c42;\n" /* 84 - 42 = 42 */
+        "    @return %final_res;\n"
+        ";;\n";
+
+    const Ny_Target *target = ny_target_get_default();
+    const char *ny_obj = "bin/test_e2e_agg_abi.obj";
+    const char *exe_path = "bin/test_e2e_agg_abi.exe";
+
+    TEST_ASSERT(compile_source_to_obj(src, ny_obj, target));
+
+    const char *objs[2] = { ny_obj, "bin/test_e2e_agg_abi_host.o" };
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    bool link_ok = ny_link_executable_with_extra(objs, 2, exe_path, target, &diags);
+    TEST_ASSERT(link_ok);
+    ny_diagnostic_list_destroy(&diags);
+
+    int exit_code = system("bin\\test_e2e_agg_abi.exe");
+    TEST_ASSERT_EQ(exit_code, 42);
+
+    remove("bin/test_e2e_agg_abi_host.c");
+    remove("bin/test_e2e_agg_abi_host.o");
+    remove(ny_obj);
+    remove(exe_path);
+}
+
 

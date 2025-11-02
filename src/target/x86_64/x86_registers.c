@@ -177,6 +177,94 @@ bool x86_abi_is_callee_saved(Ny_Target_ABI abi, X86_Phys_Reg reg) {
            (reg >= X86_R12 && reg <= X86_R15);
 }
 
+static void classify_field_recursive(const Ny_Type_Table *tt, Ny_Type_ID field_ty, uint32_t base_offset, Ny_X86_Eightbyte_Class *classes) {
+    const Ny_Type *ft = ny_type_get(tt, field_ty);
+    if (!ft) return;
+
+    if (ft->kind == NY_TYPE_KIND_STRUCT) {
+        for (size_t i = 0; i < ft->field_count; i++) {
+            uint32_t f_off = ft->field_offsets ? ft->field_offsets[i] : 0;
+            classify_field_recursive(tt, ft->field_types[i], base_offset + f_off, classes);
+        }
+        return;
+    }
+
+    if (ft->kind == NY_TYPE_KIND_ARRAY) {
+        uint32_t elem_sz = ny_type_size(tt, ft->elem_type);
+        for (uint32_t i = 0; i < ft->array_count; i++) {
+            classify_field_recursive(tt, ft->elem_type, base_offset + i * elem_sz, classes);
+        }
+        return;
+    }
+
+    size_t eightbyte_idx = base_offset / 8;
+    if (eightbyte_idx >= 2) return;
+
+    Ny_X86_Eightbyte_Class f_class = (ft->kind == NY_TYPE_KIND_PRIMITIVE && (field_ty == NY_TYPE_F32 || field_ty == NY_TYPE_F64))
+                                         ? NY_X86_CLASS_SSE
+                                         : NY_X86_CLASS_INTEGER;
+
+    if (classes[eightbyte_idx] == NY_X86_CLASS_NONE) {
+        classes[eightbyte_idx] = f_class;
+    } else if (classes[eightbyte_idx] != f_class) {
+        classes[eightbyte_idx] = NY_X86_CLASS_INTEGER;
+    }
+}
+
+Ny_X86_Aggregate_ABI x86_abi_classify_aggregate(const Ny_Type_Table *tt, Ny_Type_ID ty, Ny_Target_ABI abi) {
+    Ny_X86_Aggregate_ABI res;
+    memset(&res, 0, sizeof(res));
+
+    uint32_t size = ny_type_size(tt, ty);
+    res.size = size;
+
+    if (abi == NY_ABI_WINDOWS_X64) {
+        bool is_pow2_small = (size == 1 || size == 2 || size == 4 || size == 8);
+        if (is_pow2_small) {
+            res.pass_by_ref = false;
+            res.return_sret = false;
+            res.eightbyte_count = 1;
+            res.eightbytes[0] = NY_X86_CLASS_INTEGER;
+        } else {
+            res.pass_by_ref = true;
+            res.return_sret = true;
+            res.eightbyte_count = 0;
+        }
+        return res;
+    }
+
+    /* SysV AMD64 classification */
+    if (size == 0) {
+        res.eightbyte_count = 0;
+        return res;
+    }
+
+    if (size > 16) {
+        res.pass_by_ref = true;
+        res.return_sret = true;
+        res.eightbyte_count = 0;
+        return res;
+    }
+
+    res.eightbyte_count = (size <= 8) ? 1 : 2;
+    Ny_X86_Eightbyte_Class classes[2] = { NY_X86_CLASS_NONE, NY_X86_CLASS_NONE };
+
+    const Ny_Type *t = ny_type_get(tt, ty);
+    if (t && (t->kind == NY_TYPE_KIND_STRUCT || t->kind == NY_TYPE_KIND_ARRAY)) {
+        classify_field_recursive(tt, ty, 0, classes);
+    } else {
+        classes[0] = NY_X86_CLASS_INTEGER;
+    }
+
+    for (size_t i = 0; i < res.eightbyte_count; i++) {
+        res.eightbytes[i] = (classes[i] == NY_X86_CLASS_NONE) ? NY_X86_CLASS_INTEGER : classes[i];
+    }
+
+    res.pass_by_ref = false;
+    res.return_sret = false;
+    return res;
+}
+
 void x86_func_init(X86_Function *fn, Ny_String name, Ny_Target_ABI abi) {
     memset(fn, 0, sizeof(*fn));
     fn->name = name;
