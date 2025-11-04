@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include <nybit/analysis.h>
 #include <nybit/ir.h>
@@ -45,13 +45,22 @@ void ny_dominator_tree_init(Ny_Dominator_Tree *dt, const Ny_Function *fn) {
         dt->rpo[i] = -1;
     }
 
-    bool *visited = (bool *)ny_alloc(sizeof(bool) * n);
-    memset(visited, 0, sizeof(bool) * n);
+    size_t visited_bytes = sizeof(bool) * n;
+    size_t post_order_bytes = sizeof(Ny_Block_ID) * n;
+    size_t stack_bytes = sizeof(Dom_Stack_Frame) * n;
+    size_t last_visited_bytes = sizeof(int32_t) * n;
+    size_t cursor_bytes = sizeof(uint32_t) * n;
+    size_t scratch_total_bytes = visited_bytes + post_order_bytes + stack_bytes + last_visited_bytes + cursor_bytes;
 
-    Ny_Block_ID *post_order = (Ny_Block_ID *)ny_alloc(sizeof(Ny_Block_ID) * n);
+    uint8_t *scratch = (uint8_t *)ny_alloc(scratch_total_bytes);
+    bool *visited = (bool *)scratch;
+    Ny_Block_ID *post_order = (Ny_Block_ID *)(scratch + visited_bytes);
+    Dom_Stack_Frame *stack = (Dom_Stack_Frame *)((uint8_t *)post_order + post_order_bytes);
+    int32_t *last_visited = (int32_t *)((uint8_t *)stack + stack_bytes);
+    uint32_t *cursor = (uint32_t *)((uint8_t *)last_visited + last_visited_bytes);
+
+    memset(visited, 0, visited_bytes);
     size_t po_count = 0;
-
-    Dom_Stack_Frame *stack = (Dom_Stack_Frame *)ny_alloc(sizeof(Dom_Stack_Frame) * n);
     size_t top = 0;
 
     uint32_t entry_idx = (uint32_t)fn->entry_block;
@@ -145,21 +154,19 @@ void ny_dominator_tree_init(Ny_Dominator_Tree *dt, const Ny_Function *fn) {
     dt->children_count = total_children;
     if (total_children > 0) {
         dt->children = (Ny_Block_ID *)ny_alloc(sizeof(Ny_Block_ID) * total_children);
-        uint32_t *child_cursor = (uint32_t *)ny_alloc(sizeof(uint32_t) * n);
-        memset(child_cursor, 0, sizeof(uint32_t) * n);
+        memset(cursor, 0, cursor_bytes);
 
         for (size_t b = 0; b < n; b++) {
             Ny_Block_ID b_id = (Ny_Block_ID)b;
             if (b_id != fn->entry_block && dt->idom[b] != NY_INVALID_BLOCK) {
                 size_t p = (size_t)dt->idom[b];
                 if (p < n) {
-                    size_t pos = dt->child_start[p] + child_cursor[p];
+                    size_t pos = dt->child_start[p] + cursor[p];
                     dt->children[pos] = b_id;
-                    child_cursor[p]++;
+                    cursor[p]++;
                 }
             }
         }
-        ny_free(child_cursor, sizeof(uint32_t) * n);
     }
 
     dt->df_start = (uint32_t *)ny_alloc(sizeof(uint32_t) * n);
@@ -167,7 +174,6 @@ void ny_dominator_tree_init(Ny_Dominator_Tree *dt, const Ny_Function *fn) {
     memset(dt->df_start, 0, sizeof(uint32_t) * n);
     memset(dt->df_count, 0, sizeof(uint32_t) * n);
 
-    int32_t *last_visited = (int32_t *)ny_alloc(sizeof(int32_t) * n);
     for (size_t i = 0; i < n; i++) {
         last_visited[i] = -1;
     }
@@ -201,8 +207,7 @@ void ny_dominator_tree_init(Ny_Dominator_Tree *dt, const Ny_Function *fn) {
     dt->frontiers_count = total_df;
     if (total_df > 0) {
         dt->frontiers = (Ny_Block_ID *)ny_alloc(sizeof(Ny_Block_ID) * total_df);
-        uint32_t *df_cursor = (uint32_t *)ny_alloc(sizeof(uint32_t) * n);
-        memset(df_cursor, 0, sizeof(uint32_t) * n);
+        memset(cursor, 0, cursor_bytes);
         for (size_t i = 0; i < n; i++) {
             last_visited[i] = -1;
         }
@@ -219,22 +224,18 @@ void ny_dominator_tree_init(Ny_Dominator_Tree *dt, const Ny_Function *fn) {
                     size_t r_idx = (size_t)runner;
                     if (last_visited[r_idx] != (int32_t)b) {
                         last_visited[r_idx] = (int32_t)b;
-                        size_t pos = dt->df_start[r_idx] + df_cursor[r_idx];
+                        size_t pos = dt->df_start[r_idx] + cursor[r_idx];
                         dt->frontiers[pos] = b_id;
-                        df_cursor[r_idx]++;
+                        cursor[r_idx]++;
                     }
                     if (runner == fn->entry_block || runner == dt->idom[runner]) break;
                     runner = dt->idom[runner];
                 }
             }
         }
-        ny_free(df_cursor, sizeof(uint32_t) * n);
     }
 
-    ny_free(last_visited, sizeof(int32_t) * n);
-    ny_free(stack, sizeof(Dom_Stack_Frame) * n);
-    ny_free(post_order, sizeof(Ny_Block_ID) * n);
-    ny_free(visited, sizeof(bool) * n);
+    ny_free(scratch, scratch_total_bytes);
 }
 
 void ny_dominator_tree_destroy(Ny_Dominator_Tree *dt) {

@@ -1,7 +1,8 @@
 param(
     [string]$Compiler = "$PSScriptRoot\tools\mingw\bin\gcc.exe",
     [switch]$RunTests,
-    [switch]$RunMain
+    [switch]$RunMain,
+    [switch]$RunBench
 )
 # SPDX-License-Identifier: MPL-2.0
 # Copyright (c) 2026 Le Hung Quang Minh (furimeo)
@@ -30,7 +31,7 @@ if (-not (Test-Path $objDir)) {
 }
 
 $coreSources = (Get-ChildItem -Recurse -Filter *.c src | Where-Object { $_.Name -ne "main.c" }).FullName
-$testSources = (Get-ChildItem -Recurse -Filter *.c tests).FullName
+$testSources = (Get-ChildItem -Recurse -Filter *.c tests | Where-Object { $_.Name -ne "bench_main.c" }).FullName
 
 $coreObjs = @()
 foreach ($src in $coreSources) {
@@ -51,8 +52,17 @@ if ($LASTEXITCODE -ne 0) { exit 1 }
 & $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -Itests $testSources bin/nygen.lib -o bin/test_runner.exe
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
+if (Test-Path "tests/bench_main.c") {
+    & $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude tests/bench_main.c bin/nygen.lib -o bin/bench.exe
+    if ($LASTEXITCODE -ne 0) { exit 1 }
+}
+
 if ($RunTests) {
     & "bin/test_runner.exe"
+}
+
+if ($RunBench) {
+    & "bin/bench.exe"
 }
 
 if ($RunMain) {

@@ -192,14 +192,7 @@ Ny_Machine_Block *ny_mfunc_get_block(const Ny_Machine_Function *fn, Ny_Block_ID 
     return &fn->blocks[id];
 }
 
-Ny_Inst_ID ny_mfunc_append_inst(Ny_Machine_Function *fn, Ny_Block_ID block_id, Ny_Machine_Opcode opcode, Ny_Machine_Reg def_reg, const Ny_Machine_Operand *ops, size_t op_count, uint16_t flags) {
-    Ny_Machine_Block *blk = ny_mfunc_get_block(fn, block_id);
-    assert(blk != nullptr);
-
-    Ny_Inst_ID inst_id = (Ny_Inst_ID)fn->inst_count;
-    ny_buf_grow((void **)&fn->instructions, &fn->inst_capacity, fn->inst_count, sizeof(Ny_Machine_Instruction));
-    fn->inst_count++;
-
+static uint32_t mfunc_push_operands(Ny_Machine_Function *fn, const Ny_Machine_Operand *ops, size_t op_count) {
     uint32_t op_start = (uint32_t)fn->op_count;
     if (op_count > 0) {
         while (fn->op_count + op_count > fn->op_capacity) {
@@ -212,6 +205,18 @@ Ny_Inst_ID ny_mfunc_append_inst(Ny_Machine_Function *fn, Ny_Block_ID block_id, N
         memcpy(&fn->operands[fn->op_count], ops, op_count * sizeof(Ny_Machine_Operand));
         fn->op_count += op_count;
     }
+    return op_start;
+}
+
+Ny_Inst_ID ny_mfunc_append_inst(Ny_Machine_Function *fn, Ny_Block_ID block_id, Ny_Machine_Opcode opcode, Ny_Machine_Reg def_reg, const Ny_Machine_Operand *ops, size_t op_count, uint16_t flags) {
+    Ny_Machine_Block *blk = ny_mfunc_get_block(fn, block_id);
+    assert(blk != nullptr);
+
+    Ny_Inst_ID inst_id = (Ny_Inst_ID)fn->inst_count;
+    ny_buf_grow((void **)&fn->instructions, &fn->inst_capacity, fn->inst_count, sizeof(Ny_Machine_Instruction));
+    fn->inst_count++;
+
+    uint32_t op_start = mfunc_push_operands(fn, ops, op_count);
 
     Ny_Machine_Instruction *inst = &fn->instructions[inst_id];
     inst->id = inst_id;
@@ -245,18 +250,7 @@ Ny_Inst_ID ny_mfunc_insert_before(Ny_Machine_Function *fn, Ny_Inst_ID before_ins
     ny_buf_grow((void **)&fn->instructions, &fn->inst_capacity, fn->inst_count, sizeof(Ny_Machine_Instruction));
     fn->inst_count++;
 
-    uint32_t op_start = (uint32_t)fn->op_count;
-    if (op_count > 0) {
-        while (fn->op_count + op_count > fn->op_capacity) {
-            size_t old_cap = fn->op_capacity;
-            size_t new_cap = old_cap == 0 ? 16 : old_cap * 2;
-            while (new_cap < fn->op_count + op_count) new_cap *= 2;
-            fn->operands = (Ny_Machine_Operand *)ny_realloc(fn->operands, old_cap * sizeof(Ny_Machine_Operand), new_cap * sizeof(Ny_Machine_Operand));
-            fn->op_capacity = new_cap;
-        }
-        memcpy(&fn->operands[fn->op_count], ops, op_count * sizeof(Ny_Machine_Operand));
-        fn->op_count += op_count;
-    }
+    uint32_t op_start = mfunc_push_operands(fn, ops, op_count);
 
     Ny_Inst_ID prev_id = fn->instructions[before_inst_id].prev;
 
@@ -292,18 +286,7 @@ Ny_Inst_ID ny_mfunc_insert_after(Ny_Machine_Function *fn, Ny_Inst_ID after_inst_
     ny_buf_grow((void **)&fn->instructions, &fn->inst_capacity, fn->inst_count, sizeof(Ny_Machine_Instruction));
     fn->inst_count++;
 
-    uint32_t op_start = (uint32_t)fn->op_count;
-    if (op_count > 0) {
-        while (fn->op_count + op_count > fn->op_capacity) {
-            size_t old_cap = fn->op_capacity;
-            size_t new_cap = old_cap == 0 ? 16 : old_cap * 2;
-            while (new_cap < fn->op_count + op_count) new_cap *= 2;
-            fn->operands = (Ny_Machine_Operand *)ny_realloc(fn->operands, old_cap * sizeof(Ny_Machine_Operand), new_cap * sizeof(Ny_Machine_Operand));
-            fn->op_capacity = new_cap;
-        }
-        memcpy(&fn->operands[fn->op_count], ops, op_count * sizeof(Ny_Machine_Operand));
-        fn->op_count += op_count;
-    }
+    uint32_t op_start = mfunc_push_operands(fn, ops, op_count);
 
     Ny_Inst_ID next_id = fn->instructions[after_inst_id].next;
 

@@ -97,6 +97,7 @@ void test_nygen_compile_object_elf_and_coff(void);
 void test_nygen_diagnostics_on_error(void);
 void test_nygen_compile_executable(void);
 void test_nygen_cli_integration_e2e(void);
+void test_benchmark_medium_repeat(void);
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -193,6 +194,7 @@ int main(void) {
     RUN_TEST(test_nygen_diagnostics_on_error);
     RUN_TEST(test_nygen_compile_executable);
     RUN_TEST(test_nygen_cli_integration_e2e);
+    RUN_TEST(test_benchmark_medium_repeat);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

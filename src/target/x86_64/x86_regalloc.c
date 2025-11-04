@@ -107,12 +107,25 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
     uint64_t *live_in = (uint64_t *)ny_alloc_zero(total_words * sizeof(uint64_t));
     uint64_t *live_out = (uint64_t *)ny_alloc_zero(total_words * sizeof(uint64_t));
 
+    size_t call_capacity = 16;
+    size_t call_count = 0;
+    uint32_t *call_sites = (uint32_t *)ny_alloc(call_capacity * sizeof(uint32_t));
+
     current_inst_idx = 0;
     for (size_t b = 0; b < b_count; b++) {
         Ny_Machine_Block *blk = &fn->blocks[b];
         Ny_Inst_ID curr = blk->first_inst;
         while (curr != NY_INVALID_INST) {
             Ny_Machine_Instruction *inst = &fn->instructions[curr];
+            if (inst->opcode == NY_MOPC_CALL) {
+                if (call_count >= call_capacity) {
+                    size_t new_cap = call_capacity * 2;
+                    call_sites = (uint32_t *)ny_realloc(call_sites, call_capacity * sizeof(uint32_t), new_cap * sizeof(uint32_t));
+                    call_capacity = new_cap;
+                }
+                call_sites[call_count++] = current_inst_idx;
+            }
+
             Ny_Machine_Operand *ops = ny_mfunc_get_operands(fn, inst);
 
             for (size_t op_i = 0; op_i < inst->op_count; op_i++) {
@@ -231,23 +244,15 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
         }
     }
 
-    current_inst_idx = 0;
-    for (size_t b = 0; b < b_count; b++) {
-        Ny_Machine_Block *blk = &fn->blocks[b];
-        Ny_Inst_ID curr = blk->first_inst;
-        while (curr != NY_INVALID_INST) {
-            Ny_Machine_Instruction *inst = &fn->instructions[curr];
-            if (inst->opcode == NY_MOPC_CALL) {
-                for (size_t v = 0; v < v_count; v++) {
-                    if (intervals[v].start_idx <= current_inst_idx && intervals[v].end_idx >= current_inst_idx) {
-                        intervals[v].crosses_call = true;
-                    }
-                }
+    for (size_t c = 0; c < call_count; c++) {
+        uint32_t call_idx = call_sites[c];
+        for (size_t v = 0; v < v_count; v++) {
+            if (intervals[v].start_idx <= call_idx && intervals[v].end_idx >= call_idx) {
+                intervals[v].crosses_call = true;
             }
-            current_inst_idx++;
-            curr = inst->next;
         }
     }
+    ny_free(call_sites, call_capacity * sizeof(uint32_t));
 
     for (size_t v = 0; v < v_count; v++) {
         if (intervals[v].start_idx == UINT32_MAX) {
@@ -417,8 +422,8 @@ bool ny_regalloc_run(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_RegAlloc_Res
             uint16_t op_count = fn->instructions[curr].op_count;
             size_t fp_spill_idx = 0;
             size_t gpr_spill_idx = 0;
+            Ny_Machine_Operand *ops = ny_mfunc_get_operands(fn, &fn->instructions[curr]);
             for (size_t op_i = 0; op_i < op_count; op_i++) {
-                Ny_Machine_Operand *ops = ny_mfunc_get_operands(fn, &fn->instructions[curr]);
                 if (ops[op_i].kind == NY_MOP_KIND_REG && ops[op_i].reg.is_virtual) {
                     uint32_t v = ops[op_i].reg.id;
                     if (intervals[v].is_spilled) {
