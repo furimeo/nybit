@@ -176,6 +176,48 @@ static void run_bench_case(const Bench_Case *bc, int iterations) {
            bc->name, min_us, avg_us, max_us, peak_diff, out_size);
 }
 
+static void run_jit_bench_case(const Bench_Case *bc, int iterations) {
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+
+    size_t src_len = strlen(bc->ir_src);
+    double min_us = 1e9;
+    double max_us = 0.0;
+    double total_us = 0.0;
+
+    for (int i = 0; i < iterations; i++) {
+        LARGE_INTEGER t0, t1;
+        QueryPerformanceCounter(&t0);
+
+        Ny_JIT_Config cfg;
+        ny_jit_config_init(&cfg);
+        Ny_JIT_Engine *jit = ny_jit_create(&cfg);
+        if (!jit) exit(1);
+
+        bool ok = ny_jit_compile(jit, bc->ir_src, src_len, NULL, NULL);
+        if (!ok) exit(1);
+
+        typedef int32_t (*MainFn)(void);
+        MainFn fn = (MainFn)ny_jit_lookup(jit, "main");
+        if (!fn) exit(1);
+
+        int32_t val = fn();
+        (void)val;
+
+        ny_jit_destroy(jit);
+
+        QueryPerformanceCounter(&t1);
+        double us = get_time_us(t0, t1, freq);
+        if (us < min_us) min_us = us;
+        if (us > max_us) max_us = us;
+        total_us += us;
+    }
+
+    double avg_us = total_us / iterations;
+    printf("%-10s: min=%7.1f us  avg=%7.1f us  max=%7.1f us  (compile+execute latency)\n",
+           "jit_medium", min_us, avg_us, max_us);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -191,6 +233,8 @@ int main(void) {
     for (int i = 0; i < num_cases; i++) {
         run_bench_case(&cases[i], iters);
     }
+
+    run_jit_bench_case(&cases[1], iters);
 
     return 0;
 }

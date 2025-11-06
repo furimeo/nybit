@@ -617,108 +617,135 @@ static bool x86_lower_func_impl(const Ny_Target *target, const Ny_Machine_Functi
             size_t gpr_idx = 0;
             size_t fp_idx = 0;
 
-            for (size_t p = 0; p < mfn->param_count; p++) {
+            typedef struct {
+                X86_Reg dst;
+                X86_Reg src;
+                bool is_mem;
+                X86_Mem mem;
+                bool is_fp;
+            } Param_Copy;
+
+            Param_Copy copies[64];
+            size_t num_copies = (mfn->param_count < 64) ? mfn->param_count : 64;
+
+            for (size_t p = 0; p < num_copies; p++) {
                 X86_Reg vreg = lower_reg(mfn->param_regs[p]);
                 bool is_fp = (mfn->param_regs[p].reg_class == NY_REG_CLASS_FP32 || mfn->param_regs[p].reg_class == NY_REG_CLASS_FP64);
-                X86_Opcode mov_opc = is_fp ? ((vreg.size == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD) : X86_OPC_MOV;
+                copies[p].dst = vreg;
+                copies[p].is_fp = is_fp;
 
                 if (target->abi == NY_ABI_WINDOWS_X64) {
                     if (p < 4) {
                         X86_Phys_Reg preg_id = is_fp ? fp_args[p] : gpr_args[p];
-                        X86_Reg preg = x86_reg_phys(preg_id, vreg.size);
-                        if (vreg.is_virtual || vreg.phys_reg != preg.phys_reg) {
-                            X86_Instruction copy_param = {
-                                .opcode = (uint16_t)mov_opc,
-                                .size = vreg.size,
-                                .cond = X86_COND_NONE,
-                                .op_count = 2,
-                                .ops = { x86_op_reg(vreg), x86_op_reg(preg) }
-                            };
-                            x86_block_append_inst(xblk, copy_param);
-                        }
+                        copies[p].is_mem = false;
+                        copies[p].src = x86_reg_phys(preg_id, vreg.size);
                     } else {
+                        copies[p].is_mem = true;
                         int32_t offset = 16 + 32 + (int32_t)((p - 4) * 8);
-                        X86_Mem arg_mem = {
+                        copies[p].mem = (X86_Mem){
                             .base = x86_reg_phys(X86_RBP, 8),
-                            .index = (X86_Reg){0},
-                            .scale = 0,
                             .disp = offset,
-                            .is_rip_relative = false,
-                            .symbol = {0}
                         };
-                        X86_Instruction load_param = {
-                            .opcode = (uint16_t)mov_opc,
-                            .size = vreg.size,
-                            .cond = X86_COND_NONE,
-                            .op_count = 2,
-                            .ops = { x86_op_reg(vreg), x86_op_mem(arg_mem) }
-                        };
-                        x86_block_append_inst(xblk, load_param);
                     }
                 } else {
                     if (is_fp) {
                         if (fp_idx < fp_abi_count) {
-                            X86_Reg preg = x86_reg_phys(fp_args[fp_idx++], vreg.size);
-                            if (vreg.is_virtual || vreg.phys_reg != preg.phys_reg) {
-                                X86_Instruction copy_param = {
-                                    .opcode = (uint16_t)mov_opc,
-                                    .size = vreg.size,
-                                    .cond = X86_COND_NONE,
-                                    .op_count = 2,
-                                    .ops = { x86_op_reg(vreg), x86_op_reg(preg) }
-                                };
-                                x86_block_append_inst(xblk, copy_param);
-                            }
+                            copies[p].is_mem = false;
+                            copies[p].src = x86_reg_phys(fp_args[fp_idx++], vreg.size);
                         } else {
+                            copies[p].is_mem = true;
                             int32_t offset = 16 + (int32_t)((p - 6) * 8);
-                            X86_Mem arg_mem = {
+                            copies[p].mem = (X86_Mem){
                                 .base = x86_reg_phys(X86_RBP, 8),
-                                .index = (X86_Reg){0},
-                                .scale = 0,
                                 .disp = offset,
-                                .is_rip_relative = false,
-                                .symbol = {0}
                             };
-                            X86_Instruction load_param = {
-                                .opcode = (uint16_t)mov_opc,
-                                .size = vreg.size,
-                                .cond = X86_COND_NONE,
-                                .op_count = 2,
-                                .ops = { x86_op_reg(vreg), x86_op_mem(arg_mem) }
-                            };
-                            x86_block_append_inst(xblk, load_param);
                         }
                     } else {
                         if (gpr_idx < gpr_abi_count) {
-                            X86_Reg preg = x86_reg_phys(gpr_args[gpr_idx++], vreg.size);
-                            if (vreg.is_virtual || vreg.phys_reg != preg.phys_reg) {
-                                X86_Instruction copy_param = {
-                                    .opcode = X86_OPC_MOV,
-                                    .size = vreg.size,
-                                    .cond = X86_COND_NONE,
-                                    .op_count = 2,
-                                    .ops = { x86_op_reg(vreg), x86_op_reg(preg) }
-                                };
-                                x86_block_append_inst(xblk, copy_param);
-                            }
+                            copies[p].is_mem = false;
+                            copies[p].src = x86_reg_phys(gpr_args[gpr_idx++], vreg.size);
                         } else {
+                            copies[p].is_mem = true;
                             int32_t offset = 16 + (int32_t)((p - 6) * 8);
-                            X86_Mem arg_mem = {
+                            copies[p].mem = (X86_Mem){
                                 .base = x86_reg_phys(X86_RBP, 8),
-                                .index = (X86_Reg){0},
-                                .scale = 0,
                                 .disp = offset,
-                                .is_rip_relative = false,
-                                .symbol = {0}
                             };
-                            X86_Instruction load_param = {
-                                .opcode = X86_OPC_MOV,
-                                .size = vreg.size,
+                        }
+                    }
+                }
+            }
+
+            /* Step 1: Handle memory loads directly (they cannot clobber incoming ABI registers) */
+            for (size_t p = 0; p < num_copies; p++) {
+                if (copies[p].is_mem) {
+                    X86_Opcode mov_opc = copies[p].is_fp ? ((copies[p].dst.size == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD) : X86_OPC_MOV;
+                    X86_Instruction load_param = {
+                        .opcode = (uint16_t)mov_opc,
+                        .size = copies[p].dst.size,
+                        .cond = X86_COND_NONE,
+                        .op_count = 2,
+                        .ops = { x86_op_reg(copies[p].dst), x86_op_mem(copies[p].mem) }
+                    };
+                    x86_block_append_inst(xblk, load_param);
+                }
+            }
+
+            /* Step 2: Safe parallel copy for register-to-register moves */
+            bool done[64] = {0};
+            for (size_t p = 0; p < num_copies; p++) {
+                if (copies[p].is_mem || (!copies[p].dst.is_virtual && copies[p].dst.phys_reg == copies[p].src.phys_reg)) {
+                    done[p] = true;
+                }
+            }
+
+            bool progress = true;
+            while (progress) {
+                progress = false;
+                for (size_t i = 0; i < num_copies; i++) {
+                    if (done[i]) continue;
+                    /* Check if dst of copy i is currently used as src in any pending copy j */
+                    bool dst_conflict = false;
+                    for (size_t j = 0; j < num_copies; j++) {
+                        if (!done[j] && !copies[j].is_mem && !copies[i].dst.is_virtual &&
+                            copies[j].src.phys_reg == copies[i].dst.phys_reg) {
+                            dst_conflict = true;
+                            break;
+                        }
+                    }
+                    if (!dst_conflict) {
+                        X86_Opcode mov_opc = copies[i].is_fp ? ((copies[i].dst.size == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD) : X86_OPC_MOV;
+                        X86_Instruction copy_param = {
+                            .opcode = (uint16_t)mov_opc,
+                            .size = copies[i].dst.size,
+                            .cond = X86_COND_NONE,
+                            .op_count = 2,
+                            .ops = { x86_op_reg(copies[i].dst), x86_op_reg(copies[i].src) }
+                        };
+                        x86_block_append_inst(xblk, copy_param);
+                        done[i] = true;
+                        progress = true;
+                    }
+                }
+
+                if (!progress) {
+                    /* Break cycle using scratch register (R10 for GPR, XMM7 for FP) */
+                    for (size_t i = 0; i < num_copies; i++) {
+                        if (!done[i]) {
+                            X86_Phys_Reg scratch_id = copies[i].is_fp ? X86_XMM7 : X86_R10;
+                            X86_Reg scratch_reg = x86_reg_phys(scratch_id, copies[i].src.size);
+                            X86_Opcode mov_opc = copies[i].is_fp ? ((copies[i].src.size == 4) ? X86_OPC_MOVSS : X86_OPC_MOVSD) : X86_OPC_MOV;
+                            X86_Instruction save_scratch = {
+                                .opcode = (uint16_t)mov_opc,
+                                .size = copies[i].src.size,
                                 .cond = X86_COND_NONE,
                                 .op_count = 2,
-                                .ops = { x86_op_reg(vreg), x86_op_mem(arg_mem) }
+                                .ops = { x86_op_reg(scratch_reg), x86_op_reg(copies[i].src) }
                             };
-                            x86_block_append_inst(xblk, load_param);
+                            x86_block_append_inst(xblk, save_scratch);
+                            copies[i].src = scratch_reg;
+                            progress = true;
+                            break;
                         }
                     }
                 }

@@ -99,6 +99,14 @@ void test_nygen_compile_executable(void);
 void test_nygen_cli_integration_e2e(void);
 void test_benchmark_medium_repeat(void);
 
+void test_jit_simple_arithmetic(void);
+void test_jit_multi_function_internal_calls(void);
+void test_jit_scalar_arguments_and_return(void);
+void test_jit_globals_read_write(void);
+void test_jit_external_host_function(void);
+void test_jit_lifecycle_and_zero_leak(void);
+void test_jit_unresolved_symbol_diagnostic(void);
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -195,6 +203,14 @@ int main(void) {
     RUN_TEST(test_nygen_compile_executable);
     RUN_TEST(test_nygen_cli_integration_e2e);
     RUN_TEST(test_benchmark_medium_repeat);
+
+    RUN_TEST(test_jit_simple_arithmetic);
+    RUN_TEST(test_jit_multi_function_internal_calls);
+    RUN_TEST(test_jit_scalar_arguments_and_return);
+    RUN_TEST(test_jit_globals_read_write);
+    RUN_TEST(test_jit_external_host_function);
+    RUN_TEST(test_jit_lifecycle_and_zero_leak);
+    RUN_TEST(test_jit_unresolved_symbol_diagnostic);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);
