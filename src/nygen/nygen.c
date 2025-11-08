@@ -11,6 +11,7 @@
 #include "nybit/target_x86_64.h"
 #include "nybit/regalloc.h"
 #include "nybit/object.h"
+#include "nybit/x86_encode.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -466,4 +467,274 @@ bool nygen_compile_to_file(const char *source_text, size_t source_len, const cha
         nygen_result_destroy(&res);
     }
     return true;
+}
+
+void nygen_diagnostics_destroy(Nygen_Diagnostic *diags, size_t count) {
+    if (!diags || count == 0) return;
+    for (size_t i = 0; i < count; i++) {
+        if (diags[i].message) {
+            ny_free((void *)diags[i].message, strlen(diags[i].message) + 1);
+        }
+    }
+    ny_free(diags, count * sizeof(Nygen_Diagnostic));
+}
+
+typedef struct {
+    uint8_t *text;
+    size_t text_size;
+    uint8_t *rodata;
+    size_t rodata_size;
+    uint8_t *data;
+    size_t data_size;
+    Nygen_JIT_Symbol *symbols;
+    size_t symbol_count;
+    Nygen_JIT_Reloc *relocs;
+    size_t reloc_count;
+    char **names;
+    size_t name_count;
+} Nygen_Encoded_Owner;
+
+static void add_diag_out(Nygen_Diagnostic **out_diags, size_t *out_count, const char *msg, uint32_t line, uint32_t col) {
+    if (!out_diags || !out_count) return;
+    size_t old = *out_count;
+    size_t new_count = old + 1;
+    *out_diags = (Nygen_Diagnostic *)ny_realloc(*out_diags, old * sizeof(Nygen_Diagnostic), new_count * sizeof(Nygen_Diagnostic));
+    size_t len = strlen(msg);
+    char *copy = (char *)ny_alloc(len + 1);
+    memcpy(copy, msg, len + 1);
+    (*out_diags)[old].message = copy;
+    (*out_diags)[old].line = line;
+    (*out_diags)[old].col = col;
+    *out_count = new_count;
+}
+
+static void copy_diags_out(Nygen_Diagnostic **out_diags, size_t *out_count, const Ny_Diagnostic_List *list) {
+    for (size_t i = 0; i < list->count; i++) {
+        add_diag_out(out_diags, out_count, list->items[i].message, 0, 0);
+    }
+}
+
+static char *dup_ny_string(Ny_String s) {
+    char *name = (char *)ny_alloc(s.len + 1);
+    memcpy(name, s.data, s.len);
+    name[s.len] = '\0';
+    return name;
+}
+
+bool nygen_compile_encoded(const char *source_text, size_t source_len, const Nygen_Config *config,
+                           Nygen_Encoded_Module *out_module,
+                           Nygen_Diagnostic **out_diags, size_t *out_diag_count) {
+    if (out_module) memset(out_module, 0, sizeof(*out_module));
+    if (out_diags) *out_diags = nullptr;
+    if (out_diag_count) *out_diag_count = 0;
+
+    if (!source_text || source_len == 0 || !config || !out_module) {
+        add_diag_out(out_diags, out_diag_count, "invalid null argument to nygen_compile_encoded", 0, 0);
+        return false;
+    }
+
+    const char *mod_name = config->module_name ? config->module_name : "nygen_module";
+    Ny_Context ctx;
+    ny_context_init(&ctx, mod_name);
+
+    Ny_Parser parser;
+    ny_parser_init(&parser, &ctx.module, source_text, source_len, &ctx.arena);
+    bool parsed = ny_parse_module(&parser);
+    if (!parsed) {
+        for (size_t i = 0; i < parser.diag_count; i++) {
+            add_diag_out(out_diags, out_diag_count, parser.diagnostics[i].message, parser.diagnostics[i].line, parser.diagnostics[i].col);
+        }
+        ny_parser_destroy(&parser);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_parser_destroy(&parser);
+
+    Ny_Diagnostic_List val_diags;
+    ny_diagnostic_list_init(&val_diags);
+    bool valid = ny_validate_module(&ctx.module, &val_diags);
+    if (!valid) {
+        copy_diags_out(out_diags, out_diag_count, &val_diags);
+        ny_diagnostic_list_destroy(&val_diags);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_diagnostic_list_destroy(&val_diags);
+
+    if (config->opt_level != NYGEN_OPT_O0) {
+        Ny_Opt_Level opt_lvl = (config->opt_level == NYGEN_OPT_O2) ? NY_OPT_O2 : NY_OPT_O1;
+        ny_opt_run_module_pipeline(&ctx.module, opt_lvl);
+    }
+
+    const Ny_Target *target = config->target_triple ? ny_target_find(config->target_triple) : ny_target_get_default();
+    if (!target) {
+        add_diag_out(out_diags, out_diag_count, "target not found for compilation", 0, 0);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+
+    Ny_Machine_Module mmod;
+    Ny_Diagnostic_List mir_diags;
+    ny_diagnostic_list_init(&mir_diags);
+    bool mir_ok = ny_ir_lower_to_mir(&ctx.module, &mmod, &mir_diags);
+    if (!mir_ok) {
+        copy_diags_out(out_diags, out_diag_count, &mir_diags);
+        ny_diagnostic_list_destroy(&mir_diags);
+        ny_mmod_destroy(&mmod);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_diagnostic_list_destroy(&mir_diags);
+
+    for (size_t f = 0; f < mmod.function_count; f++) {
+        Ny_Diagnostic_List ra_diags;
+        ny_diagnostic_list_init(&ra_diags);
+        bool ra_ok = ny_regalloc_run(&mmod.functions[f], target->abi, nullptr, &ra_diags);
+        if (!ra_ok) {
+            copy_diags_out(out_diags, out_diag_count, &ra_diags);
+            ny_diagnostic_list_destroy(&ra_diags);
+            ny_mmod_destroy(&mmod);
+            ny_context_destroy(&ctx);
+            return false;
+        }
+        ny_diagnostic_list_destroy(&ra_diags);
+    }
+
+    X86_Module xmod;
+    Ny_Diagnostic_List x86_diags;
+    ny_diagnostic_list_init(&x86_diags);
+    bool x86_ok = x86_lower_machine_mod(target, &mmod, &xmod, &x86_diags);
+    if (!x86_ok) {
+        copy_diags_out(out_diags, out_diag_count, &x86_diags);
+        ny_diagnostic_list_destroy(&x86_diags);
+        x86_mod_destroy(&xmod);
+        ny_mmod_destroy(&mmod);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_diagnostic_list_destroy(&x86_diags);
+
+    X86_Encoded_Module emod;
+    Ny_Diagnostic_List enc_diags;
+    ny_diagnostic_list_init(&enc_diags);
+    bool enc_ok = x86_encode_module(&emod, &xmod, &enc_diags);
+    if (!enc_ok) {
+        copy_diags_out(out_diags, out_diag_count, &enc_diags);
+        ny_diagnostic_list_destroy(&enc_diags);
+        x86_encoded_mod_destroy(&emod);
+        x86_mod_destroy(&xmod);
+        ny_mmod_destroy(&mmod);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_diagnostic_list_destroy(&enc_diags);
+
+    Nygen_Encoded_Owner *owner = (Nygen_Encoded_Owner *)ny_alloc_zero(sizeof(Nygen_Encoded_Owner));
+
+    owner->text_size = emod.text_section.count;
+    if (owner->text_size > 0) {
+        owner->text = (uint8_t *)ny_alloc(owner->text_size);
+        memcpy(owner->text, emod.text_section.bytes, owner->text_size);
+    }
+    owner->rodata_size = emod.rodata_section.count;
+    if (owner->rodata_size > 0) {
+        owner->rodata = (uint8_t *)ny_alloc(owner->rodata_size);
+        memcpy(owner->rodata, emod.rodata_section.bytes, owner->rodata_size);
+    }
+    owner->data_size = emod.data_section.count;
+    if (owner->data_size > 0) {
+        owner->data = (uint8_t *)ny_alloc(owner->data_size);
+        memcpy(owner->data, emod.data_section.bytes, owner->data_size);
+    }
+
+    size_t total_symbols = emod.function_count + emod.global_count;
+    owner->symbol_count = total_symbols;
+    owner->name_count = total_symbols + emod.text_section.reloc_count;
+
+    if (total_symbols > 0) {
+        owner->symbols = (Nygen_JIT_Symbol *)ny_alloc_zero(total_symbols * sizeof(Nygen_JIT_Symbol));
+    }
+    if (owner->name_count > 0) {
+        owner->names = (char **)ny_alloc_zero(owner->name_count * sizeof(char *));
+    }
+
+    size_t sym_idx = 0;
+    size_t name_idx = 0;
+
+    for (size_t i = 0; i < emod.function_count; i++) {
+        const X86_Function_Code *fn = &emod.functions[i];
+        char *name = dup_ny_string(fn->name);
+        owner->names[name_idx++] = name;
+        owner->symbols[sym_idx].name = name;
+        owner->symbols[sym_idx].kind = NYGEN_SYM_FUNCTION;
+        owner->symbols[sym_idx].offset = fn->offset;
+        owner->symbols[sym_idx].size = fn->size;
+        sym_idx++;
+    }
+
+    for (size_t g = 0; g < emod.global_count; g++) {
+        const X86_Encoded_Global *eg = &emod.globals[g];
+        char *name = dup_ny_string(eg->name);
+        owner->names[name_idx++] = name;
+        owner->symbols[sym_idx].name = name;
+        if (eg->kind == NY_GLOBAL_CONST) owner->symbols[sym_idx].kind = NYGEN_SYM_RODATA;
+        else if (eg->kind == NY_GLOBAL_DATA) owner->symbols[sym_idx].kind = NYGEN_SYM_DATA;
+        else owner->symbols[sym_idx].kind = NYGEN_SYM_BSS;
+        owner->symbols[sym_idx].offset = eg->offset;
+        owner->symbols[sym_idx].size = eg->size;
+        sym_idx++;
+    }
+
+    owner->reloc_count = emod.text_section.reloc_count;
+    if (owner->reloc_count > 0) {
+        owner->relocs = (Nygen_JIT_Reloc *)ny_alloc_zero(owner->reloc_count * sizeof(Nygen_JIT_Reloc));
+    }
+
+    for (size_t r = 0; r < emod.text_section.reloc_count; r++) {
+        const X86_Relocation *reloc = &emod.text_section.relocs[r];
+        char *name = dup_ny_string(reloc->symbol_name);
+        owner->names[name_idx++] = name;
+        owner->relocs[r].kind = (reloc->kind == X86_FIXUP_CALL_REL32) ? NYGEN_RELOC_CALL_REL32 : NYGEN_RELOC_GLOBAL_REL32;
+        owner->relocs[r].code_offset = reloc->code_offset;
+        owner->relocs[r].symbol_name = name;
+        owner->relocs[r].addend = reloc->addend;
+    }
+
+    out_module->text = owner->text;
+    out_module->text_size = owner->text_size;
+    out_module->rodata = owner->rodata;
+    out_module->rodata_size = owner->rodata_size;
+    out_module->data = owner->data;
+    out_module->data_size = owner->data_size;
+    out_module->bss_size = emod.bss_size;
+    out_module->symbols = owner->symbols;
+    out_module->symbol_count = owner->symbol_count;
+    out_module->relocs = owner->relocs;
+    out_module->reloc_count = owner->reloc_count;
+    out_module->internal = owner;
+
+    x86_encoded_mod_destroy(&emod);
+    x86_mod_destroy(&xmod);
+    ny_mmod_destroy(&mmod);
+    ny_context_destroy(&ctx);
+    return true;
+}
+
+void nygen_encoded_module_destroy(Nygen_Encoded_Module *module) {
+    if (!module || !module->internal) return;
+    Nygen_Encoded_Owner *owner = (Nygen_Encoded_Owner *)module->internal;
+    if (owner->text) ny_free(owner->text, owner->text_size);
+    if (owner->rodata) ny_free(owner->rodata, owner->rodata_size);
+    if (owner->data) ny_free(owner->data, owner->data_size);
+    for (size_t i = 0; i < owner->name_count; i++) {
+        if (owner->names[i]) {
+            size_t name_len = strlen(owner->names[i]);
+            ny_free(owner->names[i], name_len + 1);
+        }
+    }
+    if (owner->names) ny_free(owner->names, owner->name_count * sizeof(char *));
+    if (owner->symbols) ny_free(owner->symbols, owner->symbol_count * sizeof(Nygen_JIT_Symbol));
+    if (owner->relocs) ny_free(owner->relocs, owner->reloc_count * sizeof(Nygen_JIT_Reloc));
+    ny_free(owner, sizeof(Nygen_Encoded_Owner));
+    memset(module, 0, sizeof(*module));
 }

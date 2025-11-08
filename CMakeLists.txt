@@ -13,21 +13,27 @@ endif()
 
 include_directories(include)
 
-# Nybit Core sources
-file(GLOB_RECURSE NYBIT_SOURCES "src/*.c")
-list(FILTER NYBIT_SOURCES EXCLUDE REGEX "src/main\\.c$")
+# Nybit Core sources (nygen.lib)
+file(GLOB_RECURSE NYGEN_SOURCES "src/*.c")
+list(FILTER NYGEN_SOURCES EXCLUDE REGEX "src/main\\.c$")
+list(FILTER NYGEN_SOURCES EXCLUDE REGEX "src/nyjit/.*\\.c$")
 
-add_library(nybit_core STATIC ${NYBIT_SOURCES})
+add_library(nygen_core STATIC ${NYGEN_SOURCES})
+
+# JIT sources (nyjit.lib)
+file(GLOB_RECURSE NYJIT_SOURCES "src/nyjit/*.c")
+add_library(nyjit STATIC ${NYJIT_SOURCES})
+target_link_libraries(nyjit PUBLIC nygen_core)
 
 # CLI Executable
 add_executable(nybit src/main.c)
-target_link_libraries(nybit PRIVATE nybit_core)
+target_link_libraries(nybit PRIVATE nygen_core)
 
 # Test Suite Executable
 file(GLOB_RECURSE TEST_SOURCES "tests/*.c")
 add_executable(test_runner ${TEST_SOURCES})
 target_include_directories(test_runner PRIVATE tests)
-target_link_libraries(test_runner PRIVATE nybit_core)
+target_link_libraries(test_runner PRIVATE nyjit nygen_core)
 
 enable_testing()
 add_test(NAME NybitTestSuite COMMAND test_runner)

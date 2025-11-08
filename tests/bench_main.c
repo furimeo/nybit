@@ -5,6 +5,7 @@
 #include <string.h>
 #include <windows.h>
 #include <nygen/nygen.h>
+#include <nyjit/nyjit.h>
 #include <nybit/support.h>
 
 typedef struct {
@@ -189,22 +190,30 @@ static void run_jit_bench_case(const Bench_Case *bc, int iterations) {
         LARGE_INTEGER t0, t1;
         QueryPerformanceCounter(&t0);
 
-        Ny_JIT_Config cfg;
-        ny_jit_config_init(&cfg);
-        Ny_JIT_Engine *jit = ny_jit_create(&cfg);
+        Nygen_Config gen_cfg;
+        nygen_config_init(&gen_cfg);
+
+        Nygen_Encoded_Module emod;
+        bool gen_ok = nygen_compile_encoded(bc->ir_src, src_len, &gen_cfg, &emod, NULL, NULL);
+        if (!gen_ok) exit(1);
+
+        Nyjit_Config jit_cfg;
+        nyjit_config_init(&jit_cfg);
+        Nyjit_Module *jit = nyjit_create(&jit_cfg);
         if (!jit) exit(1);
 
-        bool ok = ny_jit_compile(jit, bc->ir_src, src_len, NULL, NULL);
-        if (!ok) exit(1);
+        bool link_ok = nyjit_link(jit, &emod, NULL, NULL);
+        if (!link_ok) exit(1);
 
         typedef int32_t (*MainFn)(void);
-        MainFn fn = (MainFn)ny_jit_lookup(jit, "main");
+        MainFn fn = (MainFn)nyjit_lookup(jit, "main");
         if (!fn) exit(1);
 
         int32_t val = fn();
         (void)val;
 
-        ny_jit_destroy(jit);
+        nyjit_destroy(jit);
+        nygen_encoded_module_destroy(&emod);
 
         QueryPerformanceCounter(&t1);
         double us = get_time_us(t0, t1, freq);

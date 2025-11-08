@@ -106,6 +106,9 @@ void test_jit_globals_read_write(void);
 void test_jit_external_host_function(void);
 void test_jit_lifecycle_and_zero_leak(void);
 void test_jit_unresolved_symbol_diagnostic(void);
+void test_jit_nygen_standalone_encoded(void);
+void test_jit_nygen_to_nyjit_execute(void);
+void test_jit_nygen_compile_error_diagnostic(void);
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -211,6 +214,9 @@ int main(void) {
     RUN_TEST(test_jit_external_host_function);
     RUN_TEST(test_jit_lifecycle_and_zero_leak);
     RUN_TEST(test_jit_unresolved_symbol_diagnostic);
+    RUN_TEST(test_jit_nygen_standalone_encoded);
+    RUN_TEST(test_jit_nygen_to_nyjit_execute);
+    RUN_TEST(test_jit_nygen_compile_error_diagnostic);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

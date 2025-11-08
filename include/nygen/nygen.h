@@ -61,34 +61,56 @@ bool nygen_link_executable(const char *obj_path, const char *out_exe_path, const
 bool nygen_link_executable_extra(const char *const *obj_paths, size_t obj_count, const char *out_exe_path, const char *target_triple, Nygen_Result *out_res);
 
 void nygen_result_destroy(Nygen_Result *result);
+void nygen_diagnostics_destroy(Nygen_Diagnostic *diags, size_t diag_count);
 
 size_t nygen_get_current_allocated(void);
 
-/* Native JIT Execution API */
-typedef struct Ny_JIT_Engine Ny_JIT_Engine;
+/* Encoded module artifact for JIT consumption */
+typedef enum Nygen_Symbol_Kind {
+    NYGEN_SYM_FUNCTION = 0,
+    NYGEN_SYM_RODATA,
+    NYGEN_SYM_DATA,
+    NYGEN_SYM_BSS,
+} Nygen_Symbol_Kind;
 
-typedef struct Ny_JIT_Symbol {
+typedef enum Nygen_Reloc_Kind {
+    NYGEN_RELOC_CALL_REL32 = 0,
+    NYGEN_RELOC_GLOBAL_REL32,
+} Nygen_Reloc_Kind;
+
+typedef struct Nygen_JIT_Symbol {
     const char *name;
-    const void *addr;
-} Ny_JIT_Symbol;
+    Nygen_Symbol_Kind kind;
+    size_t offset;
+    size_t size;
+} Nygen_JIT_Symbol;
 
-typedef const void *(*Ny_JIT_Symbol_Resolver)(const char *name, void *user_data);
+typedef struct Nygen_JIT_Reloc {
+    Nygen_Reloc_Kind kind;
+    size_t code_offset;
+    const char *symbol_name;
+    int64_t addend;
+} Nygen_JIT_Reloc;
 
-typedef struct Ny_JIT_Config {
-    const char *target_triple;
-    Nygen_Opt_Level opt_level;
-    const Ny_JIT_Symbol *symbols;
+typedef struct Nygen_Encoded_Module {
+    const uint8_t *text;
+    size_t text_size;
+    const uint8_t *rodata;
+    size_t rodata_size;
+    const uint8_t *data;
+    size_t data_size;
+    size_t bss_size;
+    const Nygen_JIT_Symbol *symbols;
     size_t symbol_count;
-    Ny_JIT_Symbol_Resolver resolver;
-    void *resolver_user_data;
-} Ny_JIT_Config;
+    const Nygen_JIT_Reloc *relocs;
+    size_t reloc_count;
+    void *internal;
+} Nygen_Encoded_Module;
 
-void ny_jit_config_init(Ny_JIT_Config *config);
-Ny_JIT_Engine *ny_jit_create(const Ny_JIT_Config *config);
-bool ny_jit_compile(Ny_JIT_Engine *jit, const char *source_text, size_t source_len, Nygen_Diagnostic **out_diags, size_t *out_diag_count);
-void ny_jit_diagnostics_destroy(Nygen_Diagnostic *diags, size_t diag_count);
-void *ny_jit_lookup(Ny_JIT_Engine *jit, const char *symbol_name);
-void ny_jit_destroy(Ny_JIT_Engine *jit);
+bool nygen_compile_encoded(const char *source_text, size_t source_len, const Nygen_Config *config,
+                           Nygen_Encoded_Module *out_module,
+                           Nygen_Diagnostic **out_diags, size_t *out_diag_count);
+void nygen_encoded_module_destroy(Nygen_Encoded_Module *module);
 
 #ifdef __cplusplus
 }
