@@ -16,6 +16,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+extern bool nygen_serialize_nyir(const Ny_Module *mod, uint8_t **out_data, size_t *out_size);
+extern Ny_Context *nygen_deserialize_nyir(const uint8_t *data, size_t size,
+                                           Nygen_Diagnostic **out_diags, size_t *out_diag_count);
+
 void nygen_config_init(Nygen_Config *config) {
     if (!config) return;
     memset(config, 0, sizeof(*config));
@@ -106,6 +110,229 @@ static char *build_analysis_report(const Ny_Module *mod, Ny_Arena *scratch) {
     return res;
 }
 
+static Nygen_Result run_backend(Ny_Context *ctx, const Nygen_Config *config) {
+    Nygen_Result res;
+    memset(&res, 0, sizeof(res));
+
+    if (config->output_kind == NYGEN_OUTPUT_RAW_IR) {
+        char *raw_dump = ny_dump_module(&ctx->module, &ctx->arena);
+        size_t dump_len = strlen(raw_dump);
+        res.size = dump_len + 1;
+        res.data = (uint8_t *)ny_alloc(res.size);
+        memcpy(res.data, raw_dump, res.size);
+        if (config->run_analysis) {
+            res.analysis_report = build_analysis_report(&ctx->module, &ctx->arena);
+        }
+        res.success = true;
+        return res;
+    }
+
+    if (config->output_kind == NYGEN_OUTPUT_NYIR) {
+        uint8_t *nyir_data = nullptr;
+        size_t nyir_size = 0;
+        if (!nygen_serialize_nyir(&ctx->module, &nyir_data, &nyir_size)) {
+            add_diagnostic(&res, 0, 0, "failed to serialize IR to .nyir");
+            res.success = false;
+            return res;
+        }
+        res.data = nyir_data;
+        res.size = nyir_size;
+        res.success = true;
+        return res;
+    }
+
+    Ny_Opt_Level opt_lvl = NY_OPT_O1;
+    bool do_opt = true;
+    if (config->opt_level == NYGEN_OPT_O0) {
+        opt_lvl = NY_OPT_O0;
+        do_opt = false;
+    } else if (config->opt_level == NYGEN_OPT_O2) {
+        opt_lvl = NY_OPT_O2;
+        do_opt = true;
+    }
+
+    if (do_opt) {
+        ny_opt_run_module_pipeline(&ctx->module, opt_lvl);
+
+        Ny_Diagnostic_List val_diags;
+        ny_diagnostic_list_init(&val_diags);
+        bool post_valid = ny_validate_module(&ctx->module, &val_diags);
+        if (!post_valid) {
+            copy_diags_from_list(&res, &val_diags);
+            ny_diagnostic_list_destroy(&val_diags);
+            res.success = false;
+            return res;
+        }
+        ny_diagnostic_list_destroy(&val_diags);
+    }
+
+    if (config->run_analysis) {
+        res.analysis_report = build_analysis_report(&ctx->module, &ctx->arena);
+    }
+
+    if (config->output_kind == NYGEN_OUTPUT_OPT_IR) {
+        char *opt_dump = ny_dump_module(&ctx->module, &ctx->arena);
+        size_t dump_len = strlen(opt_dump);
+        res.size = dump_len + 1;
+        res.data = (uint8_t *)ny_alloc(res.size);
+        memcpy(res.data, opt_dump, res.size);
+        res.success = true;
+        return res;
+    }
+
+    if (config->output_kind == NYGEN_OUTPUT_MACHINE_IR) {
+        Ny_Machine_Module mmod;
+        Ny_Diagnostic_List mir_diags;
+        ny_diagnostic_list_init(&mir_diags);
+        bool mir_ok = ny_ir_lower_to_mir(&ctx->module, &mmod, &mir_diags);
+        if (!mir_ok) {
+            copy_diags_from_list(&res, &mir_diags);
+            ny_diagnostic_list_destroy(&mir_diags);
+            ny_mmod_destroy(&mmod);
+            res.success = false;
+            return res;
+        }
+        ny_diagnostic_list_destroy(&mir_diags);
+
+        char *mir_dump = ny_mir_dump_module(&mmod, &ctx->arena);
+        size_t dump_len = strlen(mir_dump);
+        res.size = dump_len + 1;
+        res.data = (uint8_t *)ny_alloc(res.size);
+        memcpy(res.data, mir_dump, res.size);
+
+        ny_mmod_destroy(&mmod);
+        res.success = true;
+        return res;
+    }
+
+    const Ny_Target *target = config->target_triple ? ny_target_find(config->target_triple) : ny_target_get_default();
+    if (!target) {
+        add_diagnostic(&res, 0, 0, "unknown target specified");
+        res.success = false;
+        return res;
+    }
+
+    Ny_Machine_Module mmod;
+    Ny_Diagnostic_List mir_diags;
+    ny_diagnostic_list_init(&mir_diags);
+    bool mir_ok = ny_ir_lower_to_mir(&ctx->module, &mmod, &mir_diags);
+    if (!mir_ok) {
+        copy_diags_from_list(&res, &mir_diags);
+        ny_diagnostic_list_destroy(&mir_diags);
+        ny_mmod_destroy(&mmod);
+        res.success = false;
+        return res;
+    }
+    ny_diagnostic_list_destroy(&mir_diags);
+
+    for (size_t f = 0; f < mmod.function_count; f++) {
+        Ny_Diagnostic_List ra_diags;
+        ny_diagnostic_list_init(&ra_diags);
+        bool ra_ok = ny_regalloc_run(&mmod.functions[f], target->abi, nullptr, &ra_diags);
+        if (!ra_ok) {
+            copy_diags_from_list(&res, &ra_diags);
+            ny_diagnostic_list_destroy(&ra_diags);
+            ny_mmod_destroy(&mmod);
+            res.success = false;
+            return res;
+        }
+        bool val_ok = ny_mfunc_validate_allocated(&mmod.functions[f], &ra_diags);
+        if (!val_ok) {
+            copy_diags_from_list(&res, &ra_diags);
+            ny_diagnostic_list_destroy(&ra_diags);
+            ny_mmod_destroy(&mmod);
+            res.success = false;
+            return res;
+        }
+        ny_diagnostic_list_destroy(&ra_diags);
+    }
+
+    X86_Module xmod;
+    Ny_Diagnostic_List x86_diags;
+    ny_diagnostic_list_init(&x86_diags);
+    bool x86_ok = x86_lower_machine_mod(target, &mmod, &xmod, &x86_diags);
+    if (!x86_ok) {
+        copy_diags_from_list(&res, &x86_diags);
+        ny_diagnostic_list_destroy(&x86_diags);
+        x86_mod_destroy(&xmod);
+        ny_mmod_destroy(&mmod);
+        res.success = false;
+        return res;
+    }
+    ny_diagnostic_list_destroy(&x86_diags);
+
+    if (config->output_kind == NYGEN_OUTPUT_ASM) {
+        char *x86_dump = x86_dump_mod(&xmod, &ctx->arena);
+        size_t dump_len = strlen(x86_dump);
+        res.size = dump_len + 1;
+        res.data = (uint8_t *)ny_alloc(res.size);
+        memcpy(res.data, x86_dump, res.size);
+
+        x86_mod_destroy(&xmod);
+        ny_mmod_destroy(&mmod);
+        res.success = true;
+        return res;
+    }
+
+    X86_Encoded_Module emod;
+    Ny_Diagnostic_List enc_diags;
+    ny_diagnostic_list_init(&enc_diags);
+    bool enc_ok = x86_encode_module(&emod, &xmod, &enc_diags);
+    if (!enc_ok) {
+        copy_diags_from_list(&res, &enc_diags);
+        ny_diagnostic_list_destroy(&enc_diags);
+        x86_encoded_mod_destroy(&emod);
+        x86_mod_destroy(&xmod);
+        ny_mmod_destroy(&mmod);
+        res.success = false;
+        return res;
+    }
+    ny_diagnostic_list_destroy(&enc_diags);
+
+    if (config->output_kind == NYGEN_OUTPUT_BYTES) {
+        res.size = emod.text_section.count;
+        if (res.size > 0) {
+            res.data = (uint8_t *)ny_alloc(res.size);
+            memcpy(res.data, emod.text_section.bytes, res.size);
+        }
+        x86_encoded_mod_destroy(&emod);
+        x86_mod_destroy(&xmod);
+        ny_mmod_destroy(&mmod);
+        res.success = true;
+        return res;
+    }
+
+    Ny_Object_Buffer obj_buf;
+    ny_obj_buf_init(&obj_buf);
+    Ny_Diagnostic_List obj_diags;
+    ny_diagnostic_list_init(&obj_diags);
+    bool obj_ok = ny_emit_object_module(&obj_buf, target, &emod, &obj_diags);
+    if (!obj_ok) {
+        copy_diags_from_list(&res, &obj_diags);
+        ny_diagnostic_list_destroy(&obj_diags);
+        ny_obj_buf_destroy(&obj_buf);
+        x86_encoded_mod_destroy(&emod);
+        x86_mod_destroy(&xmod);
+        ny_mmod_destroy(&mmod);
+        res.success = false;
+        return res;
+    }
+    ny_diagnostic_list_destroy(&obj_diags);
+
+    res.size = obj_buf.count;
+    if (res.size > 0) {
+        res.data = (uint8_t *)ny_alloc(res.size);
+        memcpy(res.data, obj_buf.bytes, res.size);
+    }
+
+    ny_obj_buf_destroy(&obj_buf);
+    x86_encoded_mod_destroy(&emod);
+    x86_mod_destroy(&xmod);
+    ny_mmod_destroy(&mmod);
+    res.success = true;
+    return res;
+}
+
 Nygen_Result nygen_compile(const char *source_text, size_t source_len, const Nygen_Config *config) {
     Nygen_Result res;
     memset(&res, 0, sizeof(res));
@@ -146,222 +373,8 @@ Nygen_Result nygen_compile(const char *source_text, size_t source_len, const Nyg
     }
     ny_diagnostic_list_destroy(&val_diags);
 
-    if (config->output_kind == NYGEN_OUTPUT_RAW_IR) {
-        char *raw_dump = ny_dump_module(&ctx.module, &ctx.arena);
-        size_t dump_len = strlen(raw_dump);
-        res.size = dump_len + 1;
-        res.data = (uint8_t *)ny_alloc(res.size);
-        memcpy(res.data, raw_dump, res.size);
-        if (config->run_analysis) {
-            res.analysis_report = build_analysis_report(&ctx.module, &ctx.arena);
-        }
-        ny_context_destroy(&ctx);
-        res.success = true;
-        return res;
-    }
-
-    Ny_Opt_Level opt_lvl = NY_OPT_O1;
-    bool do_opt = true;
-    if (config->opt_level == NYGEN_OPT_O0) {
-        opt_lvl = NY_OPT_O0;
-        do_opt = false;
-    } else if (config->opt_level == NYGEN_OPT_O2) {
-        opt_lvl = NY_OPT_O2;
-        do_opt = true;
-    }
-
-    if (do_opt) {
-        ny_opt_run_module_pipeline(&ctx.module, opt_lvl);
-
-        ny_diagnostic_list_init(&val_diags);
-        bool post_valid = ny_validate_module(&ctx.module, &val_diags);
-        if (!post_valid) {
-            copy_diags_from_list(&res, &val_diags);
-            ny_diagnostic_list_destroy(&val_diags);
-            ny_context_destroy(&ctx);
-            res.success = false;
-            return res;
-        }
-        ny_diagnostic_list_destroy(&val_diags);
-    }
-
-    if (config->run_analysis) {
-        res.analysis_report = build_analysis_report(&ctx.module, &ctx.arena);
-    }
-
-    if (config->output_kind == NYGEN_OUTPUT_OPT_IR) {
-        char *opt_dump = ny_dump_module(&ctx.module, &ctx.arena);
-        size_t dump_len = strlen(opt_dump);
-        res.size = dump_len + 1;
-        res.data = (uint8_t *)ny_alloc(res.size);
-        memcpy(res.data, opt_dump, res.size);
-        ny_context_destroy(&ctx);
-        res.success = true;
-        return res;
-    }
-
-    if (config->output_kind == NYGEN_OUTPUT_MACHINE_IR) {
-        Ny_Machine_Module mmod;
-        Ny_Diagnostic_List mir_diags;
-        ny_diagnostic_list_init(&mir_diags);
-        bool mir_ok = ny_ir_lower_to_mir(&ctx.module, &mmod, &mir_diags);
-        if (!mir_ok) {
-            copy_diags_from_list(&res, &mir_diags);
-            ny_diagnostic_list_destroy(&mir_diags);
-            ny_mmod_destroy(&mmod);
-            ny_context_destroy(&ctx);
-            res.success = false;
-            return res;
-        }
-        ny_diagnostic_list_destroy(&mir_diags);
-
-        char *mir_dump = ny_mir_dump_module(&mmod, &ctx.arena);
-        size_t dump_len = strlen(mir_dump);
-        res.size = dump_len + 1;
-        res.data = (uint8_t *)ny_alloc(res.size);
-        memcpy(res.data, mir_dump, res.size);
-
-        ny_mmod_destroy(&mmod);
-        ny_context_destroy(&ctx);
-        res.success = true;
-        return res;
-    }
-
-    const Ny_Target *target = config->target_triple ? ny_target_find(config->target_triple) : ny_target_get_default();
-    if (!target) {
-        add_diagnostic(&res, 0, 0, "unknown target specified");
-        ny_context_destroy(&ctx);
-        res.success = false;
-        return res;
-    }
-
-    Ny_Machine_Module mmod;
-    Ny_Diagnostic_List mir_diags;
-    ny_diagnostic_list_init(&mir_diags);
-    bool mir_ok = ny_ir_lower_to_mir(&ctx.module, &mmod, &mir_diags);
-    if (!mir_ok) {
-        copy_diags_from_list(&res, &mir_diags);
-        ny_diagnostic_list_destroy(&mir_diags);
-        ny_mmod_destroy(&mmod);
-        ny_context_destroy(&ctx);
-        res.success = false;
-        return res;
-    }
-    ny_diagnostic_list_destroy(&mir_diags);
-
-    for (size_t f = 0; f < mmod.function_count; f++) {
-        Ny_Diagnostic_List ra_diags;
-        ny_diagnostic_list_init(&ra_diags);
-        bool ra_ok = ny_regalloc_run(&mmod.functions[f], target->abi, nullptr, &ra_diags);
-        if (!ra_ok) {
-            copy_diags_from_list(&res, &ra_diags);
-            ny_diagnostic_list_destroy(&ra_diags);
-            ny_mmod_destroy(&mmod);
-            ny_context_destroy(&ctx);
-            res.success = false;
-            return res;
-        }
-        bool val_ok = ny_mfunc_validate_allocated(&mmod.functions[f], &ra_diags);
-        if (!val_ok) {
-            copy_diags_from_list(&res, &ra_diags);
-            ny_diagnostic_list_destroy(&ra_diags);
-            ny_mmod_destroy(&mmod);
-            ny_context_destroy(&ctx);
-            res.success = false;
-            return res;
-        }
-        ny_diagnostic_list_destroy(&ra_diags);
-    }
-
-    X86_Module xmod;
-    Ny_Diagnostic_List x86_diags;
-    ny_diagnostic_list_init(&x86_diags);
-    bool x86_ok = x86_lower_machine_mod(target, &mmod, &xmod, &x86_diags);
-    if (!x86_ok) {
-        copy_diags_from_list(&res, &x86_diags);
-        ny_diagnostic_list_destroy(&x86_diags);
-        x86_mod_destroy(&xmod);
-        ny_mmod_destroy(&mmod);
-        ny_context_destroy(&ctx);
-        res.success = false;
-        return res;
-    }
-    ny_diagnostic_list_destroy(&x86_diags);
-
-    if (config->output_kind == NYGEN_OUTPUT_ASM) {
-        char *x86_dump = x86_dump_mod(&xmod, &ctx.arena);
-        size_t dump_len = strlen(x86_dump);
-        res.size = dump_len + 1;
-        res.data = (uint8_t *)ny_alloc(res.size);
-        memcpy(res.data, x86_dump, res.size);
-
-        x86_mod_destroy(&xmod);
-        ny_mmod_destroy(&mmod);
-        ny_context_destroy(&ctx);
-        res.success = true;
-        return res;
-    }
-
-    X86_Encoded_Module emod;
-    Ny_Diagnostic_List enc_diags;
-    ny_diagnostic_list_init(&enc_diags);
-    bool enc_ok = x86_encode_module(&emod, &xmod, &enc_diags);
-    if (!enc_ok) {
-        copy_diags_from_list(&res, &enc_diags);
-        ny_diagnostic_list_destroy(&enc_diags);
-        x86_encoded_mod_destroy(&emod);
-        x86_mod_destroy(&xmod);
-        ny_mmod_destroy(&mmod);
-        ny_context_destroy(&ctx);
-        res.success = false;
-        return res;
-    }
-    ny_diagnostic_list_destroy(&enc_diags);
-
-    if (config->output_kind == NYGEN_OUTPUT_BYTES) {
-        res.size = emod.text_section.count;
-        if (res.size > 0) {
-            res.data = (uint8_t *)ny_alloc(res.size);
-            memcpy(res.data, emod.text_section.bytes, res.size);
-        }
-        x86_encoded_mod_destroy(&emod);
-        x86_mod_destroy(&xmod);
-        ny_mmod_destroy(&mmod);
-        ny_context_destroy(&ctx);
-        res.success = true;
-        return res;
-    }
-
-    Ny_Object_Buffer obj_buf;
-    ny_obj_buf_init(&obj_buf);
-    Ny_Diagnostic_List obj_diags;
-    ny_diagnostic_list_init(&obj_diags);
-    bool obj_ok = ny_emit_object_module(&obj_buf, target, &emod, &obj_diags);
-    if (!obj_ok) {
-        copy_diags_from_list(&res, &obj_diags);
-        ny_diagnostic_list_destroy(&obj_diags);
-        ny_obj_buf_destroy(&obj_buf);
-        x86_encoded_mod_destroy(&emod);
-        x86_mod_destroy(&xmod);
-        ny_mmod_destroy(&mmod);
-        ny_context_destroy(&ctx);
-        res.success = false;
-        return res;
-    }
-    ny_diagnostic_list_destroy(&obj_diags);
-
-    res.size = obj_buf.count;
-    if (res.size > 0) {
-        res.data = (uint8_t *)ny_alloc(res.size);
-        memcpy(res.data, obj_buf.bytes, res.size);
-    }
-
-    ny_obj_buf_destroy(&obj_buf);
-    x86_encoded_mod_destroy(&emod);
-    x86_mod_destroy(&xmod);
-    ny_mmod_destroy(&mmod);
+    res = run_backend(&ctx, config);
     ny_context_destroy(&ctx);
-    res.success = true;
     return res;
 }
 
@@ -737,4 +750,111 @@ void nygen_encoded_module_destroy(Nygen_Encoded_Module *module) {
     if (owner->relocs) ny_free(owner->relocs, owner->reloc_count * sizeof(Nygen_JIT_Reloc));
     ny_free(owner, sizeof(Nygen_Encoded_Owner));
     memset(module, 0, sizeof(*module));
+}
+
+bool nygen_compile_nyir(const char *source_text, size_t source_len, const Nygen_Config *config,
+                        uint8_t **out_data, size_t *out_size,
+                        Nygen_Diagnostic **out_diags, size_t *out_diag_count) {
+    if (out_data) *out_data = nullptr;
+    if (out_size) *out_size = 0;
+    if (out_diags) *out_diags = nullptr;
+    if (out_diag_count) *out_diag_count = 0;
+
+    if (!source_text || source_len == 0 || !config || !out_data || !out_size) {
+        if (out_diags && out_diag_count) {
+            *out_diags = (Nygen_Diagnostic *)ny_alloc_zero(sizeof(Nygen_Diagnostic));
+            const char *msg = "invalid null argument to nygen_compile_nyir";
+            size_t mlen = strlen(msg);
+            char *copy = (char *)ny_alloc(mlen + 1);
+            memcpy(copy, msg, mlen + 1);
+            (*out_diags)[0].message = copy;
+            (*out_diags)[0].line = 0;
+            (*out_diags)[0].col = 0;
+            *out_diag_count = 1;
+        }
+        return false;
+    }
+
+    const char *mod_name = config->module_name ? config->module_name : "nygen_module";
+    Ny_Context ctx;
+    ny_context_init(&ctx, mod_name);
+
+    Ny_Parser parser;
+    ny_parser_init(&parser, &ctx.module, source_text, source_len, &ctx.arena);
+    bool parse_ok = ny_parse_module(&parser);
+    if (!parse_ok) {
+        for (size_t i = 0; i < parser.diag_count; i++) {
+            if (out_diags && out_diag_count) {
+                size_t old = *out_diag_count;
+                size_t new_count = old + 1;
+                *out_diags = (Nygen_Diagnostic *)ny_realloc(*out_diags, old * sizeof(Nygen_Diagnostic), new_count * sizeof(Nygen_Diagnostic));
+                size_t mlen = strlen(parser.diagnostics[i].message);
+                char *copy = (char *)ny_alloc(mlen + 1);
+                memcpy(copy, parser.diagnostics[i].message, mlen + 1);
+                (*out_diags)[old].message = copy;
+                (*out_diags)[old].line = parser.diagnostics[i].line;
+                (*out_diags)[old].col = parser.diagnostics[i].col;
+                *out_diag_count = new_count;
+            }
+        }
+        ny_parser_destroy(&parser);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_parser_destroy(&parser);
+
+    Ny_Diagnostic_List val_diags;
+    ny_diagnostic_list_init(&val_diags);
+    bool valid = ny_validate_module(&ctx.module, &val_diags);
+    if (!valid) {
+        for (size_t i = 0; i < val_diags.count; i++) {
+            if (out_diags && out_diag_count) {
+                size_t old = *out_diag_count;
+                size_t new_count = old + 1;
+                *out_diags = (Nygen_Diagnostic *)ny_realloc(*out_diags, old * sizeof(Nygen_Diagnostic), new_count * sizeof(Nygen_Diagnostic));
+                size_t mlen = strlen(val_diags.items[i].message);
+                char *copy = (char *)ny_alloc(mlen + 1);
+                memcpy(copy, val_diags.items[i].message, mlen + 1);
+                (*out_diags)[old].message = copy;
+                (*out_diags)[old].line = 0;
+                (*out_diags)[old].col = 0;
+                *out_diag_count = new_count;
+            }
+        }
+        ny_diagnostic_list_destroy(&val_diags);
+        ny_context_destroy(&ctx);
+        return false;
+    }
+    ny_diagnostic_list_destroy(&val_diags);
+
+    if (config->opt_level != NYGEN_OPT_O0) {
+        Ny_Opt_Level opt_lvl = (config->opt_level == NYGEN_OPT_O2) ? NY_OPT_O2 : NY_OPT_O1;
+        ny_opt_run_module_pipeline(&ctx.module, opt_lvl);
+    }
+
+    bool ok = nygen_serialize_nyir(&ctx.module, out_data, out_size);
+    ny_context_destroy(&ctx);
+    return ok;
+}
+
+Ny_Context *nygen_load_nyir(const uint8_t *data, size_t size,
+                            Nygen_Diagnostic **out_diags, size_t *out_diag_count) {
+    return nygen_deserialize_nyir(data, size, out_diags, out_diag_count);
+}
+
+Nygen_Result nygen_compile_ir(Ny_Context *ctx, const Nygen_Config *config) {
+    if (!ctx || !config) {
+        Nygen_Result res;
+        memset(&res, 0, sizeof(res));
+        add_diagnostic(&res, 0, 0, "invalid null argument to nygen_compile_ir");
+        res.success = false;
+        return res;
+    }
+    return run_backend(ctx, config);
+}
+
+void nygen_ir_destroy(Ny_Context *ctx) {
+    if (!ctx) return;
+    ny_context_destroy(ctx);
+    ny_free(ctx, sizeof(Ny_Context));
 }

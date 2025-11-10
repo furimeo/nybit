@@ -227,6 +227,56 @@ static void run_jit_bench_case(const Bench_Case *bc, int iterations) {
            "jit_medium", min_us, avg_us, max_us);
 }
 
+static void run_nyir_bench_case(const Bench_Case *bc, int iterations) {
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+
+    size_t src_len = strlen(bc->ir_src);
+
+    Nygen_Config cfg;
+    nygen_config_init(&cfg);
+
+    uint8_t *nyir_data = NULL;
+    size_t nyir_size = 0;
+    bool ok = nygen_compile_nyir(bc->ir_src, src_len, &cfg, &nyir_data, &nyir_size, NULL, NULL);
+    if (!ok) exit(1);
+
+    double ser_min = 1e9, ser_max = 0, ser_total = 0;
+    double deser_min = 1e9, deser_max = 0, deser_total = 0;
+
+    for (int i = 0; i < iterations; i++) {
+        uint8_t *data = NULL;
+        size_t size = 0;
+        LARGE_INTEGER t0, t1;
+        QueryPerformanceCounter(&t0);
+        bool s_ok = nygen_compile_nyir(bc->ir_src, src_len, &cfg, &data, &size, NULL, NULL);
+        QueryPerformanceCounter(&t1);
+        if (!s_ok) exit(1);
+        double us = get_time_us(t0, t1, freq);
+        if (us < ser_min) ser_min = us;
+        if (us > ser_max) ser_max = us;
+        ser_total += us;
+
+        QueryPerformanceCounter(&t0);
+        Ny_Context *ctx = nygen_load_nyir(data, size, NULL, NULL);
+        QueryPerformanceCounter(&t1);
+        if (!ctx) exit(1);
+        us = get_time_us(t0, t1, freq);
+        if (us < deser_min) deser_min = us;
+        if (us > deser_max) deser_max = us;
+        deser_total += us;
+
+        nygen_ir_destroy(ctx);
+        ny_free(data, size);
+    }
+
+    double ser_avg = ser_total / iterations;
+    double deser_avg = deser_total / iterations;
+    printf("%-10s: ser min=%5.1f avg=%5.1f us  deser min=%5.1f avg=%5.1f us  nyir_size=%zu B\n",
+           "nyir", ser_min, ser_avg, deser_min, deser_avg, nyir_size);
+    ny_free(nyir_data, nyir_size);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -244,6 +294,7 @@ int main(void) {
     }
 
     run_jit_bench_case(&cases[1], iters);
+    run_nyir_bench_case(&cases[1], iters);
 
     return 0;
 }

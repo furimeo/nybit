@@ -19,6 +19,7 @@ typedef enum Nygen_Output_Kind {
     NYGEN_OUTPUT_BYTES,
     NYGEN_OUTPUT_OBJECT,
     NYGEN_OUTPUT_EXECUTABLE,
+    NYGEN_OUTPUT_NYIR,
 } Nygen_Output_Kind;
 
 typedef enum Nygen_Opt_Level {
@@ -111,6 +112,23 @@ bool nygen_compile_encoded(const char *source_text, size_t source_len, const Nyg
                            Nygen_Encoded_Module *out_module,
                            Nygen_Diagnostic **out_diags, size_t *out_diag_count);
 void nygen_encoded_module_destroy(Nygen_Encoded_Module *module);
+
+/* Binary .nyir IR artifact API */
+typedef struct Ny_Context Ny_Context;
+
+#define NYIR_MAGIC0 0x4E
+#define NYIR_MAGIC1 0x59
+#define NYIR_MAGIC2 0x49
+#define NYIR_MAGIC3 0x52
+#define NYIR_VERSION 1
+
+bool nygen_compile_nyir(const char *source_text, size_t source_len, const Nygen_Config *config,
+                        uint8_t **out_data, size_t *out_size,
+                        Nygen_Diagnostic **out_diags, size_t *out_diag_count);
+Ny_Context *nygen_load_nyir(const uint8_t *data, size_t size,
+                            Nygen_Diagnostic **out_diags, size_t *out_diag_count);
+Nygen_Result nygen_compile_ir(Ny_Context *ctx, const Nygen_Config *config);
+void nygen_ir_destroy(Ny_Context *ctx);
 
 #ifdef __cplusplus
 }

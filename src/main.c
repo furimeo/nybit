@@ -92,6 +92,7 @@ int main(int argc, char **argv) {
 
     const char *input_file = nullptr;
     const char *output_file = nullptr;
+    const char *nyir_input_file = nullptr;
     Nygen_Config config;
     nygen_config_init(&config);
 
@@ -102,6 +103,8 @@ int main(int argc, char **argv) {
     bool emit_obj = false;
     bool emit_exe = false;
     bool emit_ir = false;
+    bool emit_nyir = false;
+    bool from_nyir = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-O0") == 0 || strcmp(argv[i], "--no-opt") == 0) {
@@ -126,6 +129,11 @@ int main(int argc, char **argv) {
             emit_exe = true;
         } else if (strcmp(argv[i], "--emit-ir") == 0) {
             emit_ir = true;
+        } else if (strcmp(argv[i], "--emit-nyir") == 0) {
+            emit_nyir = true;
+        } else if (strcmp(argv[i], "--from-nyir") == 0 && i + 1 < argc) {
+            from_nyir = true;
+            nyir_input_file = argv[++i];
         } else if ((strcmp(argv[i], "--target") == 0 || strcmp(argv[i], "-target") == 0) && i + 1 < argc) {
             config.target_triple = argv[++i];
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
@@ -146,6 +154,8 @@ int main(int argc, char **argv) {
         config.output_kind = NYGEN_OUTPUT_ASM;
     } else if (emit_bytes) {
         config.output_kind = NYGEN_OUTPUT_BYTES;
+    } else if (emit_nyir) {
+        config.output_kind = NYGEN_OUTPUT_NYIR;
     } else if (emit_obj) {
         config.output_kind = NYGEN_OUTPUT_OBJECT;
     } else if (emit_exe || (!emit_ir && input_file != nullptr && output_file != nullptr)) {
@@ -166,6 +176,94 @@ int main(int argc, char **argv) {
     size_t source_len = 0;
     bool free_source = false;
 
+    if (from_nyir) {
+        source_text = read_entire_file(nyir_input_file, &source_len);
+        if (!source_text) return 1;
+        free_source = true;
+
+        Nygen_Diagnostic *diags = nullptr;
+        size_t diag_count = 0;
+        Ny_Context *ctx = nygen_load_nyir((const uint8_t *)source_text, source_len, &diags, &diag_count);
+        if (!ctx) {
+            for (size_t i = 0; i < diag_count; i++) {
+                fprintf(stderr, "%s\n", diags[i].message);
+            }
+            nygen_diagnostics_destroy(diags, diag_count);
+            free(source_text);
+            return 1;
+        }
+        nygen_diagnostics_destroy(diags, diag_count);
+
+        Nygen_Result res = nygen_compile_ir(ctx, &config);
+        nygen_ir_destroy(ctx);
+
+        if (!res.success) {
+            for (size_t i = 0; i < res.diagnostic_count; i++) {
+                if (res.diagnostics[i].line > 0) {
+                    fprintf(stderr, "error [%u:%u]: %s\n",
+                            res.diagnostics[i].line, res.diagnostics[i].col, res.diagnostics[i].message);
+                } else {
+                    fprintf(stderr, "%s\n", res.diagnostics[i].message);
+                }
+            }
+            nygen_result_destroy(&res);
+            free(source_text);
+            size_t leaked = nygen_get_current_allocated();
+            if (leaked != 0) {
+                fprintf(stderr, "memory leak: %zu bytes remaining\n", leaked);
+                return 2;
+            }
+            return 1;
+        }
+
+        if (output_file) {
+            FILE *f = fopen(output_file, "wb");
+            if (!f) {
+                fprintf(stderr, "error: failed to open output file '%s'\n", output_file);
+                nygen_result_destroy(&res);
+                free(source_text);
+                return 1;
+            }
+            if (res.data && res.size > 0) {
+                size_t write_len = res.size;
+                if (config.output_kind == NYGEN_OUTPUT_RAW_IR ||
+                    config.output_kind == NYGEN_OUTPUT_OPT_IR ||
+                    config.output_kind == NYGEN_OUTPUT_MACHINE_IR ||
+                    config.output_kind == NYGEN_OUTPUT_ASM) {
+                    if (write_len > 0 && res.data[write_len - 1] == '\0') {
+                        write_len--;
+                    }
+                }
+                fwrite(res.data, 1, write_len, f);
+            }
+            fclose(f);
+        } else {
+            if (res.data) {
+                if (config.output_kind == NYGEN_OUTPUT_BYTES || config.output_kind == NYGEN_OUTPUT_OBJECT) {
+                    for (size_t i = 0; i < res.size; i++) {
+                        printf("%02x%c", res.data[i], (i + 1 == res.size || (i + 1) % 16 == 0) ? '\n' : ' ');
+                    }
+                } else {
+                    fputs((const char *)res.data, stdout);
+                }
+            }
+        }
+
+        if (res.analysis_report) {
+            fputs(res.analysis_report, stdout);
+        }
+
+        nygen_result_destroy(&res);
+        free(source_text);
+
+        size_t leaked = nygen_get_current_allocated();
+        if (leaked != 0) {
+            fprintf(stderr, "memory leak: %zu bytes remaining\n", leaked);
+            return 2;
+        }
+        return 0;
+    }
+
     if (input_file) {
         source_text = read_entire_file(input_file, &source_len);
         if (!source_text) return 1;
@@ -184,7 +282,7 @@ int main(int argc, char **argv) {
         res = nygen_compile(source_text, source_len, &config);
         ok = res.success;
         if (ok && res.data) {
-            if (config.output_kind == NYGEN_OUTPUT_BYTES || config.output_kind == NYGEN_OUTPUT_OBJECT) {
+            if (config.output_kind == NYGEN_OUTPUT_BYTES || config.output_kind == NYGEN_OUTPUT_OBJECT || config.output_kind == NYGEN_OUTPUT_NYIR) {
                 for (size_t i = 0; i < res.size; i++) {
                     printf("%02x%c", res.data[i], (i + 1 == res.size || (i + 1) % 16 == 0) ? '\n' : ' ');
                 }

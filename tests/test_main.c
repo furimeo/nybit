@@ -110,6 +110,19 @@ void test_jit_nygen_standalone_encoded(void);
 void test_jit_nygen_to_nyjit_execute(void);
 void test_jit_nygen_compile_error_diagnostic(void);
 
+void test_nyir_roundtrip_simple(void);
+void test_nyir_roundtrip_multi_fn(void);
+void test_nyir_roundtrip_globals(void);
+void test_nyir_roundtrip_branch(void);
+void test_nyir_deterministic_output(void);
+void test_nyir_backend_matches_direct(void);
+void test_nyir_corrupt_truncated(void);
+void test_nyir_corrupt_bad_magic(void);
+void test_nyir_corrupt_bad_version(void);
+void test_nyir_corrupt_bad_opcode(void);
+void test_nyir_corrupt_trailing_data(void);
+void test_nyir_nygen_standalone(void);
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -217,6 +230,19 @@ int main(void) {
     RUN_TEST(test_jit_nygen_standalone_encoded);
     RUN_TEST(test_jit_nygen_to_nyjit_execute);
     RUN_TEST(test_jit_nygen_compile_error_diagnostic);
+
+    RUN_TEST(test_nyir_roundtrip_simple);
+    RUN_TEST(test_nyir_roundtrip_multi_fn);
+    RUN_TEST(test_nyir_roundtrip_globals);
+    RUN_TEST(test_nyir_roundtrip_branch);
+    RUN_TEST(test_nyir_deterministic_output);
+    RUN_TEST(test_nyir_backend_matches_direct);
+    RUN_TEST(test_nyir_corrupt_truncated);
+    RUN_TEST(test_nyir_corrupt_bad_magic);
+    RUN_TEST(test_nyir_corrupt_bad_version);
+    RUN_TEST(test_nyir_corrupt_bad_opcode);
+    RUN_TEST(test_nyir_corrupt_trailing_data);
+    RUN_TEST(test_nyir_nygen_standalone);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);
