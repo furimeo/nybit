@@ -1,4 +1,5 @@
 #include "nybit/object.h"
+#include "x86_unwind.h"
 #include <string.h>
 
 #define IMAGE_FILE_MACHINE_AMD64 0x8664
@@ -125,11 +126,29 @@ bool ny_emit_coff_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *em
     bool has_rdata = emod->rodata_section.count > 0;
     bool has_data = emod->data_section.count > 0;
     bool has_bss = emod->bss_size > 0;
+    bool has_unwind = emod->emit_unwind;
+    bool has_debug = emod->debug_info;
+
+    Ny_Object_Buffer pdata_buf;
+    ny_obj_buf_init(&pdata_buf);
+    Ny_Object_Buffer xdata_buf;
+    ny_obj_buf_init(&xdata_buf);
+    if (has_unwind) {
+        x86_build_coff_pdata_xdata(&pdata_buf, &xdata_buf, emod->source_mod, emod, 0);
+    }
+
+    Ny_Object_Buffer debug_s_buf;
+    ny_obj_buf_init(&debug_s_buf);
+    if (has_debug) {
+        x86_build_codeview_debug_s(&debug_s_buf, emod->source_mod, emod);
+    }
 
     int16_t next_sec_num = 2;
     int16_t rdata_sec_num = has_rdata ? next_sec_num++ : 0;
     int16_t data_sec_num = has_data ? next_sec_num++ : 0;
     int16_t bss_sec_num = has_bss ? next_sec_num++ : 0;
+    if (has_unwind) next_sec_num += 2;
+    if (has_debug) next_sec_num += 1;
     uint16_t total_sections = (uint16_t)(next_sec_num - 1);
 
     for (size_t i = 0; i < emod->function_count; i++) {
@@ -216,8 +235,7 @@ bool ny_emit_coff_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *em
     ny_obj_buf_append_bytes(out_buf, &fhdr, sizeof(fhdr));
 
     size_t shdr_table_offset = out_buf->count;
-    Coff_Section_Header shdrs[4];
-    memset(shdrs, 0, sizeof(shdrs));
+    Coff_Section_Header *shdrs = (Coff_Section_Header *)ny_alloc_zero(sizeof(Coff_Section_Header) * total_sections);
 
     shdrs[0] = (Coff_Section_Header){
         .Name = {'.', 't', 'e', 'x', 't', 0, 0, 0},
@@ -278,6 +296,48 @@ bool ny_emit_coff_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *em
         };
     }
 
+    if (has_unwind) {
+        shdrs[sec_idx++] = (Coff_Section_Header){
+            .Name = {'.', 'p', 'd', 'a', 't', 'a', 0, 0},
+            .VirtualSize = 0,
+            .VirtualAddress = 0,
+            .SizeOfRawData = (uint32_t)pdata_buf.count,
+            .PointerToRawData = 0,
+            .PointerToRelocations = 0,
+            .PointerToLinenumbers = 0,
+            .NumberOfRelocations = 0,
+            .NumberOfLinenumbers = 0,
+            .Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES,
+        };
+        shdrs[sec_idx++] = (Coff_Section_Header){
+            .Name = {'.', 'x', 'd', 'a', 't', 'a', 0, 0},
+            .VirtualSize = 0,
+            .VirtualAddress = 0,
+            .SizeOfRawData = (uint32_t)xdata_buf.count,
+            .PointerToRawData = 0,
+            .PointerToRelocations = 0,
+            .PointerToLinenumbers = 0,
+            .NumberOfRelocations = 0,
+            .NumberOfLinenumbers = 0,
+            .Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES,
+        };
+    }
+
+    if (has_debug) {
+        shdrs[sec_idx++] = (Coff_Section_Header){
+            .Name = {'.', 'd', 'e', 'b', 'u', 'g', '$', 'S'},
+            .VirtualSize = 0,
+            .VirtualAddress = 0,
+            .SizeOfRawData = (uint32_t)debug_s_buf.count,
+            .PointerToRawData = 0,
+            .PointerToRelocations = 0,
+            .PointerToLinenumbers = 0,
+            .NumberOfRelocations = 0,
+            .NumberOfLinenumbers = 0,
+            .Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_ALIGN_16BYTES,
+        };
+    }
+
     ny_obj_buf_append_bytes(out_buf, shdrs, sizeof(Coff_Section_Header) * total_sections);
 
     /* Emit .text raw data */
@@ -301,6 +361,27 @@ bool ny_emit_coff_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *em
         ny_obj_buf_align_to(out_buf, 16);
         data_raw_ptr = (uint32_t)out_buf->count;
         ny_obj_buf_append_bytes(out_buf, emod->data_section.bytes, emod->data_section.count);
+    }
+
+    /* Emit .pdata and .xdata raw data */
+    uint32_t pdata_raw_ptr = 0;
+    uint32_t xdata_raw_ptr = 0;
+    if (has_unwind) {
+        ny_obj_buf_align_to(out_buf, 16);
+        pdata_raw_ptr = (uint32_t)out_buf->count;
+        ny_obj_buf_append_bytes(out_buf, pdata_buf.bytes, pdata_buf.count);
+
+        ny_obj_buf_align_to(out_buf, 16);
+        xdata_raw_ptr = (uint32_t)out_buf->count;
+        ny_obj_buf_append_bytes(out_buf, xdata_buf.bytes, xdata_buf.count);
+    }
+
+    /* Emit .debug$S raw data */
+    uint32_t debug_s_raw_ptr = 0;
+    if (has_debug) {
+        ny_obj_buf_align_to(out_buf, 16);
+        debug_s_raw_ptr = (uint32_t)out_buf->count;
+        ny_obj_buf_append_bytes(out_buf, debug_s_buf.bytes, debug_s_buf.count);
     }
 
     /* Emit .text relocations */
@@ -343,10 +424,21 @@ bool ny_emit_coff_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *em
     if (has_bss) {
         patch_shdrs[patch_idx++].PointerToRawData = 0;
     }
+    if (has_unwind) {
+        patch_shdrs[patch_idx++].PointerToRawData = pdata_raw_ptr;
+        patch_shdrs[patch_idx++].PointerToRawData = xdata_raw_ptr;
+    }
+    if (has_debug) {
+        patch_shdrs[patch_idx++].PointerToRawData = debug_s_raw_ptr;
+    }
 
+    ny_free(shdrs, sizeof(Coff_Section_Header) * total_sections);
     ny_obj_buf_destroy(&symtab_buf);
     ny_obj_buf_destroy(&strtab_buf);
     ny_obj_buf_destroy(&reloc_buf);
+    ny_obj_buf_destroy(&pdata_buf);
+    ny_obj_buf_destroy(&xdata_buf);
+    ny_obj_buf_destroy(&debug_s_buf);
 
     return true;
 }

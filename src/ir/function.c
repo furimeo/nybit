@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "nybit/ir.h"
 
@@ -35,6 +35,9 @@ void ny_function_destroy(Ny_Function *fn) {
     if (fn->instructions) {
         ny_free(fn->instructions, fn->inst_capacity * sizeof(Ny_Instruction));
     }
+    if (fn->inst_locs) {
+        ny_free(fn->inst_locs, fn->inst_loc_capacity * sizeof(Ny_Loc));
+    }
     if (fn->values) {
         ny_free(fn->values, fn->val_capacity * sizeof(Ny_Value));
     }
@@ -44,6 +47,24 @@ void ny_function_destroy(Ny_Function *fn) {
 
     memset(fn, 0, sizeof(Ny_Function));
     fn->entry_block = NY_INVALID_BLOCK;
+}
+
+void ny_function_set_inst_loc(Ny_Function *fn, Ny_Inst_ID inst_id, Ny_Loc loc) {
+    if (inst_id >= fn->inst_count) return;
+    if (!fn->inst_locs && (loc.line > 0 || loc.col > 0)) {
+        fn->inst_locs = (Ny_Loc *)ny_alloc_zero(fn->inst_capacity * sizeof(Ny_Loc));
+        fn->inst_loc_capacity = fn->inst_capacity;
+    }
+    if (fn->inst_locs) {
+        fn->inst_locs[inst_id] = loc;
+    }
+}
+
+Ny_Loc ny_function_get_inst_loc(const Ny_Function *fn, Ny_Inst_ID inst_id) {
+    if (!fn || !fn->inst_locs || inst_id >= fn->inst_count) {
+        return (Ny_Loc){0, 0, 0};
+    }
+    return fn->inst_locs[inst_id];
 }
 
 void ny_function_add_param(Ny_Function *fn, Ny_Type_ID type, Ny_String name) {
@@ -116,6 +137,11 @@ Ny_Inst_ID ny_function_append_instruction(Ny_Function *fn, Ny_Block_ID block_id,
     assert(blk != NULL);
 
     ny_buf_grow((void **)&fn->instructions, &fn->inst_capacity, fn->inst_count, sizeof(Ny_Instruction));
+    if (fn->inst_locs && fn->inst_capacity > fn->inst_loc_capacity) {
+        fn->inst_locs = (Ny_Loc *)ny_realloc(fn->inst_locs, fn->inst_loc_capacity * sizeof(Ny_Loc), fn->inst_capacity * sizeof(Ny_Loc));
+        memset(fn->inst_locs + fn->inst_loc_capacity, 0, (fn->inst_capacity - fn->inst_loc_capacity) * sizeof(Ny_Loc));
+        fn->inst_loc_capacity = fn->inst_capacity;
+    }
     Ny_Inst_ID inst_id = (Ny_Inst_ID)fn->inst_count++;
 
     uint32_t op_start = (uint32_t)fn->op_count;

@@ -136,6 +136,10 @@ int main(int argc, char **argv) {
             nyir_input_file = argv[++i];
         } else if ((strcmp(argv[i], "--target") == 0 || strcmp(argv[i], "-target") == 0) && i + 1 < argc) {
             config.target_triple = argv[++i];
+        } else if (strcmp(argv[i], "-g") == 0 || strcmp(argv[i], "--debug") == 0) {
+            config.debug_info = true;
+        } else if (strcmp(argv[i], "--no-unwind") == 0) {
+            config.emit_unwind = false;
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             output_file = argv[++i];
         } else if (argv[i][0] == '-') {

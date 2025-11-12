@@ -324,6 +324,8 @@ typedef struct Ny_Function {
     Ny_Instruction *instructions;
     size_t inst_count;
     size_t inst_capacity;
+    Ny_Loc *inst_locs;
+    size_t inst_loc_capacity;
 
     Ny_Value *values;
     size_t val_count;
@@ -346,6 +348,8 @@ Ny_Operand *ny_function_get_operands(const Ny_Function *fn, const Ny_Instruction
 Ny_Block_ID ny_function_create_block(Ny_Function *fn, Ny_String name);
 Ny_Value_ID ny_function_create_value(Ny_Function *fn, Ny_Type_ID type, Ny_Value_Kind kind, Ny_Inst_ID def, uint32_t index, Ny_String name);
 Ny_Inst_ID ny_function_append_instruction(Ny_Function *fn, Ny_Block_ID block_id, Ny_Opcode opcode, Ny_Value_ID result, const Ny_Operand *ops, size_t op_count, uint16_t flags);
+void ny_function_set_inst_loc(Ny_Function *fn, Ny_Inst_ID inst_id, Ny_Loc loc);
+Ny_Loc ny_function_get_inst_loc(const Ny_Function *fn, Ny_Inst_ID inst_id);
 
 void ny_instruction_replace_operand(Ny_Function *fn, Ny_Inst_ID inst_id, size_t op_idx, Ny_Operand new_op);
 void ny_function_replace_all_uses(Ny_Function *fn, Ny_Value_ID old_val, Ny_Value_ID new_val);

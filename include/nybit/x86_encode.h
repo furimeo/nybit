@@ -89,6 +89,10 @@ typedef struct X86_Encoded_Module {
     X86_Encoded_Global *globals;
     size_t global_count;
     size_t global_capacity;
+
+    bool emit_unwind;
+    bool debug_info;
+    const X86_Module *source_mod;
 } X86_Encoded_Module;
 
 void x86_encoded_mod_init(X86_Encoded_Module *emod, Ny_String name);

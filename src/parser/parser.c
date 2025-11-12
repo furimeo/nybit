@@ -494,7 +494,8 @@ static bool parse_function(Ny_Parser *p) {
             Ny_Value_ID res_id = ny_function_create_value(fn, res_type, NY_VAL_INSTRUCTION, NY_INVALID_INST, 0, res_name);
             map_insert(&val_map, res_name, (uint32_t)res_id);
 
-            ny_function_append_instruction(fn, cur_block, op, res_id, ops_buf, op_count, 0);
+            Ny_Inst_ID inst_id = ny_function_append_instruction(fn, cur_block, op, res_id, ops_buf, op_count, 0);
+            ny_function_set_inst_loc(fn, inst_id, (Ny_Loc){1, (uint32_t)op_tok.line, (uint32_t)op_tok.col});
             continue;
         }
 
@@ -677,7 +678,8 @@ static bool parse_function(Ny_Parser *p) {
                 }
             }
 
-            ny_function_append_instruction(fn, cur_block, op, NY_INVALID_VALUE, ops_buf, op_count, 0);
+            Ny_Inst_ID inst_id = ny_function_append_instruction(fn, cur_block, op, NY_INVALID_VALUE, ops_buf, op_count, 0);
+            ny_function_set_inst_loc(fn, inst_id, (Ny_Loc){1, (uint32_t)op_tok.line, (uint32_t)op_tok.col});
             continue;
         }
 

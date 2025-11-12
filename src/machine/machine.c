@@ -141,6 +141,9 @@ void ny_mfunc_destroy(Ny_Machine_Function *fn) {
     if (fn->instructions) {
         ny_free(fn->instructions, fn->inst_capacity * sizeof(Ny_Machine_Instruction));
     }
+    if (fn->inst_locs) {
+        ny_free(fn->inst_locs, fn->inst_loc_capacity * sizeof(Ny_Loc));
+    }
     if (fn->operands) {
         ny_free(fn->operands, fn->op_capacity * sizeof(Ny_Machine_Operand));
     }
@@ -214,6 +217,11 @@ Ny_Inst_ID ny_mfunc_append_inst(Ny_Machine_Function *fn, Ny_Block_ID block_id, N
 
     Ny_Inst_ID inst_id = (Ny_Inst_ID)fn->inst_count;
     ny_buf_grow((void **)&fn->instructions, &fn->inst_capacity, fn->inst_count, sizeof(Ny_Machine_Instruction));
+    if (fn->inst_locs && fn->inst_capacity > fn->inst_loc_capacity) {
+        fn->inst_locs = (Ny_Loc *)ny_realloc(fn->inst_locs, fn->inst_loc_capacity * sizeof(Ny_Loc), fn->inst_capacity * sizeof(Ny_Loc));
+        memset(fn->inst_locs + fn->inst_loc_capacity, 0, (fn->inst_capacity - fn->inst_loc_capacity) * sizeof(Ny_Loc));
+        fn->inst_loc_capacity = fn->inst_capacity;
+    }
     fn->inst_count++;
 
     uint32_t op_start = mfunc_push_operands(fn, ops, op_count);
@@ -248,6 +256,11 @@ Ny_Inst_ID ny_mfunc_insert_before(Ny_Machine_Function *fn, Ny_Inst_ID before_ins
 
     Ny_Inst_ID inst_id = (Ny_Inst_ID)fn->inst_count;
     ny_buf_grow((void **)&fn->instructions, &fn->inst_capacity, fn->inst_count, sizeof(Ny_Machine_Instruction));
+    if (fn->inst_locs && fn->inst_capacity > fn->inst_loc_capacity) {
+        fn->inst_locs = (Ny_Loc *)ny_realloc(fn->inst_locs, fn->inst_loc_capacity * sizeof(Ny_Loc), fn->inst_capacity * sizeof(Ny_Loc));
+        memset(fn->inst_locs + fn->inst_loc_capacity, 0, (fn->inst_capacity - fn->inst_loc_capacity) * sizeof(Ny_Loc));
+        fn->inst_loc_capacity = fn->inst_capacity;
+    }
     fn->inst_count++;
 
     uint32_t op_start = mfunc_push_operands(fn, ops, op_count);
@@ -284,6 +297,11 @@ Ny_Inst_ID ny_mfunc_insert_after(Ny_Machine_Function *fn, Ny_Inst_ID after_inst_
 
     Ny_Inst_ID inst_id = (Ny_Inst_ID)fn->inst_count;
     ny_buf_grow((void **)&fn->instructions, &fn->inst_capacity, fn->inst_count, sizeof(Ny_Machine_Instruction));
+    if (fn->inst_locs && fn->inst_capacity > fn->inst_loc_capacity) {
+        fn->inst_locs = (Ny_Loc *)ny_realloc(fn->inst_locs, fn->inst_loc_capacity * sizeof(Ny_Loc), fn->inst_capacity * sizeof(Ny_Loc));
+        memset(fn->inst_locs + fn->inst_loc_capacity, 0, (fn->inst_capacity - fn->inst_loc_capacity) * sizeof(Ny_Loc));
+        fn->inst_loc_capacity = fn->inst_capacity;
+    }
     fn->inst_count++;
 
     uint32_t op_start = mfunc_push_operands(fn, ops, op_count);
@@ -320,6 +338,24 @@ Ny_Machine_Instruction *ny_mfunc_get_inst(const Ny_Machine_Function *fn, Ny_Inst
 Ny_Machine_Operand *ny_mfunc_get_operands(const Ny_Machine_Function *fn, const Ny_Machine_Instruction *inst) {
     if (inst->op_count == 0) return nullptr;
     return &fn->operands[inst->op_start];
+}
+
+void ny_mfunc_set_inst_loc(Ny_Machine_Function *fn, Ny_Inst_ID inst_id, Ny_Loc loc) {
+    if (inst_id >= fn->inst_count) return;
+    if (!fn->inst_locs && (loc.line > 0 || loc.col > 0)) {
+        fn->inst_locs = (Ny_Loc *)ny_alloc_zero(fn->inst_capacity * sizeof(Ny_Loc));
+        fn->inst_loc_capacity = fn->inst_capacity;
+    }
+    if (fn->inst_locs) {
+        fn->inst_locs[inst_id] = loc;
+    }
+}
+
+Ny_Loc ny_mfunc_get_inst_loc(const Ny_Machine_Function *fn, Ny_Inst_ID inst_id) {
+    if (!fn || !fn->inst_locs || inst_id >= fn->inst_count) {
+        return (Ny_Loc){0, 0, 0};
+    }
+    return fn->inst_locs[inst_id];
 }
 
 void ny_mmod_init(Ny_Machine_Module *mod, Ny_String name) {

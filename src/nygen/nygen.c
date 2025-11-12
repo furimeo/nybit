@@ -28,6 +28,8 @@ void nygen_config_init(Nygen_Config *config) {
     config->output_kind = NYGEN_OUTPUT_OPT_IR;
     config->run_analysis = false;
     config->module_name = "nygen_module";
+    config->debug_info = false;
+    config->emit_unwind = true;
 }
 
 size_t nygen_get_current_allocated(void) {
@@ -288,6 +290,8 @@ static Nygen_Result run_backend(Ny_Context *ctx, const Nygen_Config *config) {
         return res;
     }
     ny_diagnostic_list_destroy(&enc_diags);
+    emod.debug_info = config->debug_info;
+    emod.emit_unwind = config->emit_unwind;
 
     if (config->output_kind == NYGEN_OUTPUT_BYTES) {
         res.size = emod.text_section.count;

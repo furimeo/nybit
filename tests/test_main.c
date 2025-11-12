@@ -123,6 +123,11 @@ void test_nyir_corrupt_bad_opcode(void);
 void test_nyir_corrupt_trailing_data(void);
 void test_nyir_nygen_standalone(void);
 
+void test_debug_source_loc_propagation(void);
+void test_debug_dwarf_elf_emission(void);
+void test_debug_coff_codeview_emission(void);
+void test_unwind_disabled_flag(void);
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -243,6 +248,11 @@ int main(void) {
     RUN_TEST(test_nyir_corrupt_bad_opcode);
     RUN_TEST(test_nyir_corrupt_trailing_data);
     RUN_TEST(test_nyir_nygen_standalone);
+
+    RUN_TEST(test_debug_source_loc_propagation);
+    RUN_TEST(test_debug_dwarf_elf_emission);
+    RUN_TEST(test_debug_coff_codeview_emission);
+    RUN_TEST(test_unwind_disabled_flag);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

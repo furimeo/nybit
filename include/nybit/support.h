@@ -30,6 +30,12 @@ typedef uint32_t Ny_Slot_ID;
 #define NY_INVALID_REG      UINT32_MAX
 #define NY_INVALID_SLOT     UINT32_MAX
 
+typedef struct Ny_Loc {
+    uint32_t file_id;
+    uint32_t line;
+    uint32_t col;
+} Ny_Loc;
+
 typedef struct Ny_String {
     const char *data;
     size_t len;

@@ -791,6 +791,7 @@ bool x86_encode_function(X86_Code_Buffer *buf, const X86_Function *fn, Ny_Diagno
 
 bool x86_encode_module(X86_Encoded_Module *out_mod, const X86_Module *mod, Ny_Diagnostic_List *diags) {
     x86_encoded_mod_init(out_mod, mod->name);
+    out_mod->source_mod = mod;
 
     if (mod->function_count > 0) {
         out_mod->function_capacity = mod->function_count;

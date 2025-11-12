@@ -298,6 +298,8 @@ typedef struct Ny_Machine_Function {
     Ny_Machine_Instruction *instructions;
     size_t inst_count;
     size_t inst_capacity;
+    Ny_Loc *inst_locs;
+    size_t inst_loc_capacity;
 
     Ny_Machine_Operand *operands;
     size_t op_count;
@@ -319,6 +321,8 @@ Ny_Inst_ID ny_mfunc_insert_before(Ny_Machine_Function *fn, Ny_Inst_ID before_ins
 Ny_Inst_ID ny_mfunc_insert_after(Ny_Machine_Function *fn, Ny_Inst_ID after_inst_id, Ny_Machine_Opcode opcode, Ny_Machine_Reg def_reg, const Ny_Machine_Operand *ops, size_t op_count, uint16_t flags);
 Ny_Machine_Instruction *ny_mfunc_get_inst(const Ny_Machine_Function *fn, Ny_Inst_ID id);
 Ny_Machine_Operand *ny_mfunc_get_operands(const Ny_Machine_Function *fn, const Ny_Machine_Instruction *inst);
+void ny_mfunc_set_inst_loc(Ny_Machine_Function *fn, Ny_Inst_ID inst_id, Ny_Loc loc);
+Ny_Loc ny_mfunc_get_inst_loc(const Ny_Machine_Function *fn, Ny_Inst_ID inst_id);
 
 /* Machine Global */
 

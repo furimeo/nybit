@@ -34,6 +34,8 @@ typedef struct Nygen_Config {
     Nygen_Output_Kind output_kind;
     bool run_analysis;
     const char *module_name;
+    bool debug_info;
+    bool emit_unwind;
 } Nygen_Config;
 
 typedef struct Nygen_Diagnostic {

@@ -1,4 +1,5 @@
 #include "nybit/object.h"
+#include "x86_unwind.h"
 #include <string.h>
 
 #define ELF_MAGIC_0 0x7F
@@ -164,23 +165,33 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
     Elf64_Sym null_sym = {0};
     ny_obj_buf_append_bytes(&symtab_buf, &null_sym, sizeof(null_sym));
 
-    /* Check if .rodata, .data, .bss sections are present */
+    /* Check if .rodata, .data, .bss, unwind, and debug sections are present */
     bool has_rodata = emod->rodata_section.count > 0;
     bool has_data = emod->data_section.count > 0;
     bool has_bss = emod->bss_size > 0;
     bool has_rela = (emod->text_section.reloc_count > 0);
 
-    /* Build Section Indices:
-       0: NULL
-       text_shndx: .text (always 1)
-       rela_shndx: .rela.text (if has_rela)
-       rodata_shndx: .rodata (if has_rodata)
-       data_shndx: .data (if has_data)
-       bss_shndx: .bss (if has_bss)
-       symtab_shndx: .symtab
-       strtab_shndx: .strtab
-       shstrtab_shndx: .shstrtab
-    */
+    bool has_eh_frame = emod->emit_unwind;
+    bool has_debug = emod->debug_info;
+
+    Ny_Object_Buffer eh_frame_buf;
+    ny_obj_buf_init(&eh_frame_buf);
+    if (has_eh_frame) {
+        x86_build_eh_frame(&eh_frame_buf, emod->source_mod, emod);
+    }
+
+    Ny_Object_Buffer debug_line_buf;
+    ny_obj_buf_init(&debug_line_buf);
+    Ny_Object_Buffer debug_abbrev_buf;
+    ny_obj_buf_init(&debug_abbrev_buf);
+    Ny_Object_Buffer debug_info_buf;
+    ny_obj_buf_init(&debug_info_buf);
+    if (has_debug) {
+        x86_build_dwarf_line(&debug_line_buf, emod->source_mod, emod);
+        x86_build_dwarf_abbrev(&debug_abbrev_buf);
+        x86_build_dwarf_info(&debug_info_buf, emod->source_mod, emod);
+    }
+
     uint16_t text_shndx = 1;
     uint16_t next_shndx = 2;
 
@@ -188,6 +199,10 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
     uint16_t rodata_shndx = has_rodata ? next_shndx++ : 0;
     uint16_t data_shndx = has_data ? next_shndx++ : 0;
     uint16_t bss_shndx = has_bss ? next_shndx++ : 0;
+    uint16_t eh_frame_shndx = has_eh_frame ? next_shndx++ : 0;
+    uint16_t dbg_line_shndx = has_debug ? next_shndx++ : 0;
+    uint16_t dbg_abbrev_shndx = has_debug ? next_shndx++ : 0;
+    uint16_t dbg_info_shndx = has_debug ? next_shndx++ : 0;
     uint16_t symtab_shndx = next_shndx++;
     uint16_t strtab_shndx = next_shndx++;
     uint16_t shstrtab_shndx = next_shndx++;
@@ -284,6 +299,10 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
     uint32_t str_rodata = has_rodata ? elf_add_cstr(&shstrtab_buf, ".rodata") : 0;
     uint32_t str_data = has_data ? elf_add_cstr(&shstrtab_buf, ".data") : 0;
     uint32_t str_bss = has_bss ? elf_add_cstr(&shstrtab_buf, ".bss") : 0;
+    uint32_t str_eh_frame = has_eh_frame ? elf_add_cstr(&shstrtab_buf, ".eh_frame") : 0;
+    uint32_t str_dbg_line = has_debug ? elf_add_cstr(&shstrtab_buf, ".debug_line") : 0;
+    uint32_t str_dbg_abbrev = has_debug ? elf_add_cstr(&shstrtab_buf, ".debug_abbrev") : 0;
+    uint32_t str_dbg_info = has_debug ? elf_add_cstr(&shstrtab_buf, ".debug_info") : 0;
     uint32_t str_symtab = elf_add_cstr(&shstrtab_buf, ".symtab");
     uint32_t str_strtab = elf_add_cstr(&shstrtab_buf, ".strtab");
     uint32_t str_shstrtab = elf_add_cstr(&shstrtab_buf, ".shstrtab");
@@ -344,6 +363,38 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
 
     uint64_t bss_offset = out_buf->count;
     uint64_t bss_size = emod->bss_size;
+
+    uint64_t eh_frame_offset = 0;
+    uint64_t eh_frame_size = 0;
+    if (has_eh_frame) {
+        ny_obj_buf_align_to(out_buf, 8);
+        eh_frame_offset = out_buf->count;
+        eh_frame_size = eh_frame_buf.count;
+        ny_obj_buf_append_bytes(out_buf, eh_frame_buf.bytes, eh_frame_size);
+    }
+
+    uint64_t dbg_line_offset = 0;
+    uint64_t dbg_line_size = 0;
+    uint64_t dbg_abbrev_offset = 0;
+    uint64_t dbg_abbrev_size = 0;
+    uint64_t dbg_info_offset = 0;
+    uint64_t dbg_info_size = 0;
+    if (has_debug) {
+        ny_obj_buf_align_to(out_buf, 1);
+        dbg_line_offset = out_buf->count;
+        dbg_line_size = debug_line_buf.count;
+        ny_obj_buf_append_bytes(out_buf, debug_line_buf.bytes, dbg_line_size);
+
+        ny_obj_buf_align_to(out_buf, 1);
+        dbg_abbrev_offset = out_buf->count;
+        dbg_abbrev_size = debug_abbrev_buf.count;
+        ny_obj_buf_append_bytes(out_buf, debug_abbrev_buf.bytes, dbg_abbrev_size);
+
+        ny_obj_buf_align_to(out_buf, 1);
+        dbg_info_offset = out_buf->count;
+        dbg_info_size = debug_info_buf.count;
+        ny_obj_buf_append_bytes(out_buf, debug_info_buf.bytes, dbg_info_size);
+    }
 
     ny_obj_buf_align_to(out_buf, 8);
     uint64_t symtab_offset = out_buf->count;
@@ -441,6 +492,60 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
         };
     }
 
+    if (has_eh_frame) {
+        shdrs[eh_frame_shndx] = (Elf64_Shdr){
+            .sh_name = str_eh_frame,
+            .sh_type = SHT_PROGBITS,
+            .sh_flags = SHF_ALLOC,
+            .sh_addr = 0,
+            .sh_offset = eh_frame_offset,
+            .sh_size = eh_frame_size,
+            .sh_link = 0,
+            .sh_info = 0,
+            .sh_addralign = 8,
+            .sh_entsize = 0,
+        };
+    }
+
+    if (has_debug) {
+        shdrs[dbg_line_shndx] = (Elf64_Shdr){
+            .sh_name = str_dbg_line,
+            .sh_type = SHT_PROGBITS,
+            .sh_flags = 0,
+            .sh_addr = 0,
+            .sh_offset = dbg_line_offset,
+            .sh_size = dbg_line_size,
+            .sh_link = 0,
+            .sh_info = 0,
+            .sh_addralign = 1,
+            .sh_entsize = 0,
+        };
+        shdrs[dbg_abbrev_shndx] = (Elf64_Shdr){
+            .sh_name = str_dbg_abbrev,
+            .sh_type = SHT_PROGBITS,
+            .sh_flags = 0,
+            .sh_addr = 0,
+            .sh_offset = dbg_abbrev_offset,
+            .sh_size = dbg_abbrev_size,
+            .sh_link = 0,
+            .sh_info = 0,
+            .sh_addralign = 1,
+            .sh_entsize = 0,
+        };
+        shdrs[dbg_info_shndx] = (Elf64_Shdr){
+            .sh_name = str_dbg_info,
+            .sh_type = SHT_PROGBITS,
+            .sh_flags = 0,
+            .sh_addr = 0,
+            .sh_offset = dbg_info_offset,
+            .sh_size = dbg_info_size,
+            .sh_link = 0,
+            .sh_info = 0,
+            .sh_addralign = 1,
+            .sh_entsize = 0,
+        };
+    }
+
     shdrs[symtab_shndx] = (Elf64_Shdr){
         .sh_name = str_symtab,
         .sh_type = SHT_SYMTAB,
@@ -487,6 +592,10 @@ bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *e
     ny_obj_buf_destroy(&strtab_buf);
     ny_obj_buf_destroy(&shstrtab_buf);
     ny_obj_buf_destroy(&rela_buf);
+    ny_obj_buf_destroy(&eh_frame_buf);
+    ny_obj_buf_destroy(&debug_line_buf);
+    ny_obj_buf_destroy(&debug_abbrev_buf);
+    ny_obj_buf_destroy(&debug_info_buf);
 
     return true;
 }

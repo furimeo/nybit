@@ -194,6 +194,8 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
 
             Ny_Operand *ops = ny_function_get_operands(fn, inst);
             Ny_Machine_Reg def_reg = inst->result != NY_INVALID_VALUE ? val_map[inst->result] : (Ny_Machine_Reg){0};
+            Ny_Loc loc = ny_function_get_inst_loc(fn, curr);
+            size_t minst_start = mfn->inst_count;
 
             switch (inst->opcode) {
             case NY_OPCODE_CONST: {
@@ -403,6 +405,12 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
             }
             default:
                 break;
+            }
+
+            if (loc.line > 0 || loc.col > 0) {
+                for (size_t mi = minst_start; mi < mfn->inst_count; mi++) {
+                    ny_mfunc_set_inst_loc(mfn, (Ny_Inst_ID)mi, loc);
+                }
             }
 
             curr = inst->next;
