@@ -128,6 +128,14 @@ void test_debug_dwarf_elf_emission(void);
 void test_debug_coff_codeview_emission(void);
 void test_unwind_disabled_flag(void);
 
+void test_nylink_context_lifecycle(void);
+void test_nylink_single_elf_loading(void);
+void test_nylink_single_coff_loading(void);
+void test_nylink_multi_object_relocations(void);
+void test_nylink_duplicate_symbol_error(void);
+void test_nylink_undefined_symbol_error(void);
+void test_nylink_malformed_objects(void);
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -253,6 +261,14 @@ int main(void) {
     RUN_TEST(test_debug_dwarf_elf_emission);
     RUN_TEST(test_debug_coff_codeview_emission);
     RUN_TEST(test_unwind_disabled_flag);
+
+    RUN_TEST(test_nylink_context_lifecycle);
+    RUN_TEST(test_nylink_single_elf_loading);
+    RUN_TEST(test_nylink_single_coff_loading);
+    RUN_TEST(test_nylink_multi_object_relocations);
+    RUN_TEST(test_nylink_duplicate_symbol_error);
+    RUN_TEST(test_nylink_undefined_symbol_error);
+    RUN_TEST(test_nylink_malformed_objects);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

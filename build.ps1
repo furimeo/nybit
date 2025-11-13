@@ -33,9 +33,11 @@ New-Item -ItemType Directory -Path $objDir | Out-Null
 
 Remove-Item -Force "bin/nygen.lib" -ErrorAction SilentlyContinue
 Remove-Item -Force "bin/nyjit.lib" -ErrorAction SilentlyContinue
+Remove-Item -Force "bin/nylink.lib" -ErrorAction SilentlyContinue
 
-$nygenSources = (Get-ChildItem -Recurse -Filter *.c src | Where-Object { $_.Name -ne "main.c" -and $_.FullName -notlike "*\nyjit\*" }).FullName
+$nygenSources = (Get-ChildItem -Recurse -Filter *.c src | Where-Object { $_.Name -ne "main.c" -and $_.FullName -notlike "*\nyjit\*" -and $_.FullName -notlike "*\nylink\*" }).FullName
 $nyjitSources = (Get-ChildItem -Recurse -Filter *.c src/nyjit).FullName
+$nylinkSources = (Get-ChildItem -Recurse -Filter *.c src/nylink).FullName
 $testSources = (Get-ChildItem -Recurse -Filter *.c tests | Where-Object { $_.Name -ne "bench_main.c" }).FullName
 
 $nygenObjs = @()
@@ -64,10 +66,23 @@ foreach ($src in $nyjitSources) {
 & $Ar rcs bin/nyjit.lib $nyjitObjs
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
+$nylinkObjs = @()
+foreach ($src in $nylinkSources) {
+    $rel = Resolve-Path -Relative $src
+    $objName = ($rel -replace '[\\/:]', '_') -replace '\.c$', '.o'
+    $objPath = "$objDir/$objName"
+    $nylinkObjs += $objPath
+    & $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -c $src -o $objPath
+    if ($LASTEXITCODE -ne 0) { exit 1 }
+}
+
+& $Ar rcs bin/nylink.lib $nylinkObjs
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
 & $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude src/main.c bin/nygen.lib -o bin/nybit.exe
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-& $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -Itests $testSources bin/nyjit.lib bin/nygen.lib -o bin/test_runner.exe
+& $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -Itests $testSources bin/nylink.lib bin/nyjit.lib bin/nygen.lib -o bin/test_runner.exe
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 if (Test-Path "tests/bench_main.c") {
