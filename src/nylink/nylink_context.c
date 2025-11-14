@@ -59,6 +59,9 @@ void nylink_context_destroy(Nylink_Context *ctx) {
     if (ctx->sections) {
         ny_free(ctx->sections, ctx->section_capacity * sizeof(Nylink_Section));
     }
+    if (ctx->sec_layouts) {
+        ny_free(ctx->sec_layouts, ctx->section_count * sizeof(Nylink_Input_Sec_Layout));
+    }
 
     for (size_t i = 0; i < ctx->symbol_count; i++) {
         Nylink_Symbol *sym = &ctx->symbols[i];
@@ -68,6 +71,15 @@ void nylink_context_destroy(Nylink_Context *ctx) {
     }
     if (ctx->symbols) {
         ny_free(ctx->symbols, ctx->symbol_capacity * sizeof(Nylink_Symbol));
+    }
+    if (ctx->resolved_symbols) {
+        ny_free(ctx->resolved_symbols, ctx->symbol_count * sizeof(Nylink_Resolved_Sym));
+    }
+
+    for (size_t i = 0; i < 4; i++) {
+        if (ctx->out_sections[i].data) {
+            ny_free(ctx->out_sections[i].data, ctx->out_sections[i].data_capacity);
+        }
     }
 
     if (ctx->relocations) {
@@ -222,6 +234,26 @@ bool nylink_resolve_symbols(Nylink_Context *ctx) {
     return success;
 }
 
+bool nylink_layout(Nylink_Context *ctx, const Nylink_Config *cfg) {
+    if (!ctx) return false;
+    return nylink_layout_internal(ctx, cfg);
+}
+
+bool nylink_apply_relocations(Nylink_Context *ctx) {
+    if (!ctx) return false;
+    return nylink_apply_relocations_internal(ctx);
+}
+
+bool nylink_write_executable(Nylink_Context *ctx, const char *out_path, const Nylink_Config *cfg) {
+    if (!ctx || !out_path) return false;
+    Nylink_Target_Format fmt = cfg ? cfg->target_format : NYLINK_TARGET_ELF64;
+    if (fmt == NYLINK_TARGET_PE) {
+        return nylink_write_pe_executable(ctx, out_path, cfg);
+    } else {
+        return nylink_write_elf_executable(ctx, out_path, cfg);
+    }
+}
+
 size_t nylink_get_section_count(const Nylink_Context *ctx) {
     return ctx ? ctx->section_count : 0;
 }
@@ -229,6 +261,11 @@ size_t nylink_get_section_count(const Nylink_Context *ctx) {
 const Nylink_Section *nylink_get_section(const Nylink_Context *ctx, size_t index) {
     if (!ctx || index >= ctx->section_count) return nullptr;
     return &ctx->sections[index];
+}
+
+uint64_t nylink_section_get_va(const Nylink_Context *ctx, uint32_t sec_id) {
+    if (!ctx || !ctx->sec_layouts || sec_id >= ctx->section_count) return 0;
+    return ctx->sec_layouts[sec_id].va;
 }
 
 size_t nylink_get_symbol_count(const Nylink_Context *ctx) {
@@ -262,6 +299,11 @@ const Nylink_Symbol *nylink_find_symbol(const Nylink_Context *ctx, const char *n
     return candidate;
 }
 
+uint64_t nylink_symbol_get_final_va(const Nylink_Context *ctx, uint32_t sym_id) {
+    if (!ctx || !ctx->resolved_symbols || sym_id >= ctx->symbol_count) return 0;
+    return ctx->resolved_symbols[sym_id].final_va;
+}
+
 size_t nylink_get_relocation_count(const Nylink_Context *ctx) {
     return ctx ? ctx->relocation_count : 0;
 }
@@ -283,3 +325,4 @@ const Nylink_Diagnostic *nylink_get_diagnostic(const Nylink_Context *ctx, size_t
 bool nylink_has_errors(const Nylink_Context *ctx) {
     return ctx ? ctx->has_error : false;
 }
+

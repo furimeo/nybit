@@ -6,8 +6,9 @@
 #include "nybit/target.h"
 #include "nybit/target_x86_64.h"
 #include <string.h>
+#include <stdlib.h>
 
-static void emit_dummy_elf(Ny_Object_Buffer *obj_buf, const char *fn_name, bool add_reloc, const char *reloc_target) {
+static void emit_dummy_elf_with_addend(Ny_Object_Buffer *obj_buf, const char *fn_name, bool add_reloc, const char *reloc_target, int64_t addend) {
     X86_Encoded_Module emod;
     x86_encoded_mod_init(&emod, ny_str("dummy_elf"));
 
@@ -26,7 +27,7 @@ static void emit_dummy_elf(Ny_Object_Buffer *obj_buf, const char *fn_name, bool 
             .kind = X86_FIXUP_CALL_REL32,
             .code_offset = 1,
             .symbol_name = ny_str(reloc_target),
-            .addend = 0,
+            .addend = addend,
         };
         x86_buf_append_reloc(&emod.text_section, reloc);
     }
@@ -38,6 +39,10 @@ static void emit_dummy_elf(Ny_Object_Buffer *obj_buf, const char *fn_name, bool 
 
     ny_diagnostic_list_destroy(&diags);
     x86_encoded_mod_destroy(&emod);
+}
+
+static void emit_dummy_elf(Ny_Object_Buffer *obj_buf, const char *fn_name, bool add_reloc, const char *reloc_target) {
+    emit_dummy_elf_with_addend(obj_buf, fn_name, add_reloc, reloc_target, 0);
 }
 
 static void emit_dummy_coff(Ny_Object_Buffer *obj_buf, const char *fn_name, bool add_reloc, const char *reloc_target) {
@@ -254,4 +259,303 @@ void test_nylink_malformed_objects(void) {
     TEST_ASSERT(nylink_get_diagnostic_count(ctx) >= 3);
 
     nylink_context_destroy(ctx);
+}
+
+void test_nylink_section_layout_and_symbol_vas(void) {
+    Ny_Object_Buffer obj1;
+    ny_obj_buf_init(&obj1);
+    emit_dummy_elf(&obj1, "fn1", false, nullptr);
+
+    Ny_Object_Buffer obj2;
+    ny_obj_buf_init(&obj2);
+    emit_dummy_elf(&obj2, "fn2", false, nullptr);
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "o1.o", obj1.bytes, obj1.count));
+    TEST_ASSERT(nylink_add_object(ctx, "o2.o", obj2.bytes, obj2.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .base_address = 0x400000,
+        .entry_point = "fn1",
+    };
+
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    const Nylink_Symbol *s1 = nylink_find_symbol(ctx, "fn1");
+    const Nylink_Symbol *s2 = nylink_find_symbol(ctx, "fn2");
+    TEST_ASSERT(s1 != nullptr && s2 != nullptr);
+
+    uint64_t va1 = nylink_symbol_get_final_va(ctx, s1->id);
+    uint64_t va2 = nylink_symbol_get_final_va(ctx, s2->id);
+
+    TEST_ASSERT(va1 >= 0x400000);
+    TEST_ASSERT(va2 > va1);
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj2);
+    ny_obj_buf_destroy(&obj1);
+}
+
+void test_nylink_relocation_application(void) {
+    Ny_Object_Buffer obj1;
+    ny_obj_buf_init(&obj1);
+    emit_dummy_elf(&obj1, "caller_main", true, "callee_target");
+
+    Ny_Object_Buffer obj2;
+    ny_obj_buf_init(&obj2);
+    emit_dummy_elf(&obj2, "callee_target", false, nullptr);
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "caller.o", obj1.bytes, obj1.count));
+    TEST_ASSERT(nylink_add_object(ctx, "callee.o", obj2.bytes, obj2.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .base_address = 0x400000,
+        .entry_point = "caller_main",
+    };
+
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj2);
+    ny_obj_buf_destroy(&obj1);
+}
+
+void test_nylink_relocation_pc32_overflow(void) {
+    Ny_Object_Buffer obj1;
+    ny_obj_buf_init(&obj1);
+    /* Set massive addend to force 32-bit PC-relative overflow */
+    emit_dummy_elf_with_addend(&obj1, "far_caller", true, "far_target", 0x10000000000LL);
+
+    Ny_Object_Buffer obj2;
+    ny_obj_buf_init(&obj2);
+    emit_dummy_elf(&obj2, "far_target", false, nullptr);
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "far1.o", obj1.bytes, obj1.count));
+    TEST_ASSERT(nylink_add_object(ctx, "far2.o", obj2.bytes, obj2.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .base_address = 0x400000,
+        .entry_point = "far_caller",
+    };
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+
+    TEST_ASSERT(!nylink_apply_relocations(ctx));
+    TEST_ASSERT(nylink_has_errors(ctx));
+
+    const Nylink_Diagnostic *diag = nylink_get_diagnostic(ctx, 0);
+    TEST_ASSERT(diag != nullptr && diag->message != nullptr);
+    TEST_ASSERT(strstr(diag->message, "relocation overflow") != nullptr);
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj2);
+    ny_obj_buf_destroy(&obj1);
+}
+
+void test_nylink_elf64_executable_emission(void) {
+    Ny_Object_Buffer obj1;
+    ny_obj_buf_init(&obj1);
+    emit_dummy_elf(&obj1, "elf_main", true, "elf_sub");
+
+    Ny_Object_Buffer obj2;
+    ny_obj_buf_init(&obj2);
+    emit_dummy_elf(&obj2, "elf_sub", false, nullptr);
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "em1.o", obj1.bytes, obj1.count));
+    TEST_ASSERT(nylink_add_object(ctx, "em2.o", obj2.bytes, obj2.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .base_address = 0x400000,
+        .entry_point = "elf_main",
+    };
+
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+
+    const char *out_exe = "bin/test_nylink_elf.exe";
+    TEST_ASSERT(nylink_write_executable(ctx, out_exe, &cfg));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    /* Verify written ELF binary */
+    FILE *f = fopen(out_exe, "rb");
+    TEST_ASSERT(f != nullptr);
+    uint8_t magic[4];
+    TEST_ASSERT_EQ(fread(magic, 1, 4, f), 4);
+    TEST_ASSERT_EQ(magic[0], 0x7F);
+    TEST_ASSERT_EQ(magic[1], 'E');
+    TEST_ASSERT_EQ(magic[2], 'L');
+    TEST_ASSERT_EQ(magic[3], 'F');
+    fclose(f);
+    remove(out_exe);
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj2);
+    ny_obj_buf_destroy(&obj1);
+}
+
+void test_nylink_pe_executable_emission(void) {
+    Ny_Object_Buffer obj1;
+    ny_obj_buf_init(&obj1);
+    emit_dummy_coff(&obj1, "pe_main", true, "pe_sub");
+
+    Ny_Object_Buffer obj2;
+    ny_obj_buf_init(&obj2);
+    emit_dummy_coff(&obj2, "pe_sub", false, nullptr);
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "pe1.obj", obj1.bytes, obj1.count));
+    TEST_ASSERT(nylink_add_object(ctx, "pe2.obj", obj2.bytes, obj2.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .base_address = 0x140000000ULL,
+        .entry_point = "pe_main",
+    };
+
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+
+    const char *out_exe = "bin/test_nylink_pe.exe";
+    TEST_ASSERT(nylink_write_executable(ctx, out_exe, &cfg));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    /* Verify written PE binary */
+    FILE *f = fopen(out_exe, "rb");
+    TEST_ASSERT(f != nullptr);
+    uint8_t dos_sig[2];
+    TEST_ASSERT_EQ(fread(dos_sig, 1, 2, f), 2);
+    TEST_ASSERT_EQ(dos_sig[0], 'M');
+    TEST_ASSERT_EQ(dos_sig[1], 'Z');
+
+    fseek(f, 0x80, SEEK_SET);
+    uint8_t pe_sig[4];
+    TEST_ASSERT_EQ(fread(pe_sig, 1, 4, f), 4);
+    TEST_ASSERT_EQ(pe_sig[0], 'P');
+    TEST_ASSERT_EQ(pe_sig[1], 'E');
+    TEST_ASSERT_EQ(pe_sig[2], 0);
+    TEST_ASSERT_EQ(pe_sig[3], 0);
+    fclose(f);
+    remove(out_exe);
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj2);
+    ny_obj_buf_destroy(&obj1);
+}
+
+void test_nylink_e2e_multi_object_execution(void) {
+#if defined(_WIN32)
+    /* Test creating two COFF objects:
+       Object 1 (sub):
+         fn_add(a, b): returns a + b
+       Object 2 (main):
+         main(): calls fn_add(20, 22), returns 42
+    */
+    X86_Encoded_Module emod_sub;
+    x86_encoded_mod_init(&emod_sub, ny_str("emod_sub"));
+
+    /* sub function:
+       mov eax, ecx
+       add eax, edx
+       ret
+       bytes: 89 c8 01 d0 c3
+    */
+    const uint8_t code_sub[] = { 0x89, 0xc8, 0x01, 0xd0, 0xc3 };
+    x86_buf_append_bytes(&emod_sub.text_section, code_sub, sizeof(code_sub));
+    ny_buf_grow((void **)&emod_sub.functions, &emod_sub.function_capacity, 1, sizeof(X86_Function_Code));
+    emod_sub.functions[emod_sub.function_count++] = (X86_Function_Code){
+        .name = ny_str("fn_add"),
+        .offset = 0,
+        .size = sizeof(code_sub),
+    };
+
+    Ny_Object_Buffer obj_sub;
+    ny_obj_buf_init(&obj_sub);
+    Ny_Diagnostic_List diags_sub;
+    ny_diagnostic_list_init(&diags_sub);
+    TEST_ASSERT(ny_emit_coff_x86_64(&obj_sub, &emod_sub, &diags_sub));
+    ny_diagnostic_list_destroy(&diags_sub);
+    x86_encoded_mod_destroy(&emod_sub);
+
+    /* main function:
+       sub rsp, 40 (shadow space)
+       mov ecx, 20
+       mov edx, 22
+       call fn_add (rel32 at offset 13)
+       add rsp, 40
+       ret
+       bytes: 48 83 ec 28 b9 14 00 00 00 ba 16 00 00 00 e8 00 00 00 00 48 83 c4 28 c3
+    */
+    X86_Encoded_Module emod_main;
+    x86_encoded_mod_init(&emod_main, ny_str("emod_main"));
+    const uint8_t code_main[] = {
+        0x48, 0x83, 0xec, 0x28,
+        0xb9, 0x14, 0x00, 0x00, 0x00,
+        0xba, 0x16, 0x00, 0x00, 0x00,
+        0xe8, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0x83, 0xc4, 0x28,
+        0xc3
+    };
+    x86_buf_append_bytes(&emod_main.text_section, code_main, sizeof(code_main));
+    ny_buf_grow((void **)&emod_main.functions, &emod_main.function_capacity, 1, sizeof(X86_Function_Code));
+    emod_main.functions[emod_main.function_count++] = (X86_Function_Code){
+        .name = ny_str("main"),
+        .offset = 0,
+        .size = sizeof(code_main),
+    };
+    X86_Relocation reloc = {
+        .kind = X86_FIXUP_CALL_REL32,
+        .code_offset = 15,
+        .symbol_name = ny_str("fn_add"),
+        .addend = 0,
+    };
+    x86_buf_append_reloc(&emod_main.text_section, reloc);
+
+    Ny_Object_Buffer obj_main;
+    ny_obj_buf_init(&obj_main);
+    Ny_Diagnostic_List diags_main;
+    ny_diagnostic_list_init(&diags_main);
+    TEST_ASSERT(ny_emit_coff_x86_64(&obj_main, &emod_main, &diags_main));
+    ny_diagnostic_list_destroy(&diags_main);
+    x86_encoded_mod_destroy(&emod_main);
+
+    /* Link using nylink.lib */
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "sub.obj", obj_sub.bytes, obj_sub.count));
+    TEST_ASSERT(nylink_add_object(ctx, "main.obj", obj_main.bytes, obj_main.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .base_address = 0x140000000ULL,
+        .entry_point = "main",
+    };
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+
+    const char *out_exe = "bin/test_nylink_run.exe";
+    TEST_ASSERT(nylink_write_executable(ctx, out_exe, &cfg));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    int ret = system("bin\\test_nylink_run.exe");
+    TEST_ASSERT_EQ(ret, 42);
+
+    remove(out_exe);
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj_main);
+    ny_obj_buf_destroy(&obj_sub);
+#endif
 }

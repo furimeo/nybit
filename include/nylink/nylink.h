@@ -74,6 +74,17 @@ typedef struct Nylink_Relocation {
     int64_t addend;
 } Nylink_Relocation;
 
+typedef enum Nylink_Target_Format {
+    NYLINK_TARGET_ELF64 = 0,
+    NYLINK_TARGET_PE,
+} Nylink_Target_Format;
+
+typedef struct Nylink_Config {
+    Nylink_Target_Format target_format;
+    uint64_t base_address;
+    const char *entry_point;
+} Nylink_Config;
+
 typedef struct Nylink_Context Nylink_Context;
 
 Nylink_Context *nylink_context_create(void);
@@ -81,13 +92,18 @@ void nylink_context_destroy(Nylink_Context *ctx);
 
 bool nylink_add_object(Nylink_Context *ctx, const char *name, const uint8_t *data, size_t size);
 bool nylink_resolve_symbols(Nylink_Context *ctx);
+bool nylink_layout(Nylink_Context *ctx, const Nylink_Config *cfg);
+bool nylink_apply_relocations(Nylink_Context *ctx);
+bool nylink_write_executable(Nylink_Context *ctx, const char *out_path, const Nylink_Config *cfg);
 
 size_t nylink_get_section_count(const Nylink_Context *ctx);
 const Nylink_Section *nylink_get_section(const Nylink_Context *ctx, size_t index);
+uint64_t nylink_section_get_va(const Nylink_Context *ctx, uint32_t sec_id);
 
 size_t nylink_get_symbol_count(const Nylink_Context *ctx);
 const Nylink_Symbol *nylink_get_symbol(const Nylink_Context *ctx, size_t index);
 const Nylink_Symbol *nylink_find_symbol(const Nylink_Context *ctx, const char *name);
+uint64_t nylink_symbol_get_final_va(const Nylink_Context *ctx, uint32_t sym_id);
 
 size_t nylink_get_relocation_count(const Nylink_Context *ctx);
 const Nylink_Relocation *nylink_get_relocation(const Nylink_Context *ctx, size_t index);

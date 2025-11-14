@@ -17,6 +17,30 @@ typedef struct Nylink_Object {
     uint32_t sym_count;
 } Nylink_Object;
 
+typedef struct Nylink_Output_Section {
+    Nylink_Sec_Kind kind;
+    const char *name;
+    uint64_t va;
+    uint64_t file_offset;
+    uint64_t file_size;
+    uint64_t mem_size;
+    uint32_t align;
+    uint8_t *data;
+    size_t data_capacity;
+} Nylink_Output_Section;
+
+typedef struct Nylink_Input_Sec_Layout {
+    uint32_t out_sec_idx;
+    uint64_t offset_in_out_sec;
+    uint64_t va;
+} Nylink_Input_Sec_Layout;
+
+typedef struct Nylink_Resolved_Sym {
+    uint32_t sym_id;
+    uint64_t final_va;
+    bool is_defined;
+} Nylink_Resolved_Sym;
+
 struct Nylink_Context {
     Nylink_Object *objects;
     size_t object_count;
@@ -26,9 +50,13 @@ struct Nylink_Context {
     size_t section_count;
     size_t section_capacity;
 
+    Nylink_Input_Sec_Layout *sec_layouts;
+
     Nylink_Symbol *symbols;
     size_t symbol_count;
     size_t symbol_capacity;
+
+    Nylink_Resolved_Sym *resolved_symbols;
 
     Nylink_Relocation *relocations;
     size_t relocation_count;
@@ -38,6 +66,13 @@ struct Nylink_Context {
     size_t diagnostic_count;
     size_t diagnostic_capacity;
 
+    Nylink_Output_Section out_sections[4]; /* 0: text, 1: rodata, 2: data, 3: bss */
+    bool is_laid_out;
+    bool relocations_applied;
+    uint64_t entry_point_va;
+    uint64_t image_base;
+    uint64_t total_file_size;
+
     bool has_error;
 };
 
@@ -45,5 +80,10 @@ void nylink_diag_add(Nylink_Context *ctx, const char *msg, const char *obj_name,
 
 bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx);
 bool nylink_read_coff(Nylink_Context *ctx, uint32_t obj_idx);
+
+bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg);
+bool nylink_apply_relocations_internal(Nylink_Context *ctx);
+bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, const Nylink_Config *cfg);
+bool nylink_write_pe_executable(Nylink_Context *ctx, const char *out_path, const Nylink_Config *cfg);
 
 #endif

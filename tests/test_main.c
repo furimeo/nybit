@@ -135,6 +135,12 @@ void test_nylink_multi_object_relocations(void);
 void test_nylink_duplicate_symbol_error(void);
 void test_nylink_undefined_symbol_error(void);
 void test_nylink_malformed_objects(void);
+void test_nylink_section_layout_and_symbol_vas(void);
+void test_nylink_relocation_application(void);
+void test_nylink_relocation_pc32_overflow(void);
+void test_nylink_elf64_executable_emission(void);
+void test_nylink_pe_executable_emission(void);
+void test_nylink_e2e_multi_object_execution(void);
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -269,6 +275,12 @@ int main(void) {
     RUN_TEST(test_nylink_duplicate_symbol_error);
     RUN_TEST(test_nylink_undefined_symbol_error);
     RUN_TEST(test_nylink_malformed_objects);
+    RUN_TEST(test_nylink_section_layout_and_symbol_vas);
+    RUN_TEST(test_nylink_relocation_application);
+    RUN_TEST(test_nylink_relocation_pc32_overflow);
+    RUN_TEST(test_nylink_elf64_executable_emission);
+    RUN_TEST(test_nylink_pe_executable_emission);
+    RUN_TEST(test_nylink_e2e_multi_object_execution);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);
