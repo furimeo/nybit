@@ -29,7 +29,6 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
         uint64_t target_sec_offset = ctx->sec_layouts[reloc->sec_id].offset_in_out_sec + reloc->offset;
         uint64_t place_va = ctx->sec_layouts[reloc->sec_id].va + reloc->offset;
 
-        /* Resolve target symbol final VA */
         uint64_t sym_va = 0;
         const char *sym_name = "<unnamed>";
 
@@ -37,20 +36,14 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
             const Nylink_Symbol *sym = &ctx->symbols[reloc->sym_id];
             if (sym->name) sym_name = sym->name;
 
-            if (sym->is_defined) {
+            if (ctx->resolved_symbols && ctx->resolved_symbols[sym->id].is_defined) {
                 sym_va = ctx->resolved_symbols[sym->id].final_va;
             } else {
-                /* Try finding resolved global / weak symbol with matching name */
-                const Nylink_Symbol *found = nylink_find_symbol(ctx, sym->name);
-                if (found && found->is_defined) {
-                    sym_va = ctx->resolved_symbols[found->id].final_va;
-                } else {
-                    char msg[256];
-                    snprintf(msg, sizeof(msg), "relocation against unresolved symbol: %s", sym_name);
-                    nylink_diag_add(ctx, msg, in_sec->name, sym_name);
-                    success = false;
-                    continue;
-                }
+                char msg[256];
+                snprintf(msg, sizeof(msg), "relocation against unresolved symbol: %s", sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
             }
         } else {
             nylink_diag_add(ctx, "invalid relocation: symbol index out of bounds", in_sec->name, nullptr);

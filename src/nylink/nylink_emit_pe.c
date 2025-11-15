@@ -117,7 +117,6 @@ bool nylink_write_pe_executable(Nylink_Context *ctx, const char *out_path, const
         return false;
     }
 
-    /* Count active sections */
     uint16_t num_sections = 0;
     for (size_t i = 0; i < 4; i++) {
         if (ctx->out_sections[i].mem_size > 0) {
@@ -140,12 +139,12 @@ bool nylink_write_pe_executable(Nylink_Context *ctx, const char *out_path, const
     /* PE signature */
     uint32_t pe_sig = 0x00004550; /* 'PE\0\0' */
 
-    /* COFF File Header */
+    /* COFF File Header: TimeDateStamp = 0 for 100% deterministic binary builds */
     Pe_File_Header file_hdr;
     memset(&file_hdr, 0, sizeof(file_hdr));
     file_hdr.Machine = IMAGE_FILE_MACHINE_AMD64;
     file_hdr.NumberOfSections = num_sections;
-    file_hdr.TimeDateStamp = 0x66000000;
+    file_hdr.TimeDateStamp = 0;
     file_hdr.SizeOfOptionalHeader = sizeof(Pe_Optional_Header64);
     file_hdr.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_LARGE_ADDRESS_AWARE;
 

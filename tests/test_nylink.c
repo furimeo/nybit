@@ -8,6 +8,132 @@
 #include <string.h>
 #include <stdlib.h>
 
+#pragma pack(push, 1)
+typedef struct Elf64_Test_Ehdr {
+    unsigned char e_ident[16];
+    uint16_t e_type;
+    uint16_t e_machine;
+    uint32_t e_version;
+    uint64_t e_entry;
+    uint64_t e_phoff;
+    uint64_t e_shoff;
+    uint32_t e_flags;
+    uint16_t e_ehsize;
+    uint16_t e_phentsize;
+    uint16_t e_phnum;
+    uint16_t e_shentsize;
+    uint16_t e_shnum;
+    uint16_t e_shstrndx;
+} Elf64_Test_Ehdr;
+
+typedef struct Elf64_Test_Phdr {
+    uint32_t p_type;
+    uint32_t p_flags;
+    uint64_t p_offset;
+    uint64_t p_vaddr;
+    uint64_t p_paddr;
+    uint64_t p_filesz;
+    uint64_t p_memsz;
+    uint64_t p_align;
+} Elf64_Test_Phdr;
+
+typedef struct Elf64_Test_Shdr {
+    uint32_t sh_name;
+    uint32_t sh_type;
+    uint64_t sh_flags;
+    uint64_t sh_addr;
+    uint64_t sh_offset;
+    uint64_t sh_size;
+    uint32_t sh_link;
+    uint32_t sh_info;
+    uint64_t sh_addralign;
+    uint64_t sh_entsize;
+} Elf64_Test_Shdr;
+
+typedef struct Pe_Test_Dos_Header {
+    uint16_t e_magic;
+    uint16_t e_cblp;
+    uint16_t e_cp;
+    uint16_t e_crlc;
+    uint16_t e_cparhdr;
+    uint16_t e_minalloc;
+    uint16_t e_maxalloc;
+    uint16_t e_ss;
+    uint16_t e_sp;
+    uint16_t e_csum;
+    uint16_t e_ip;
+    uint16_t e_cs;
+    uint16_t e_lfarlc;
+    uint16_t e_ovno;
+    uint16_t e_res[4];
+    uint16_t e_oemid;
+    uint16_t e_oeminfo;
+    uint16_t e_res2[10];
+    uint32_t e_lfanew;
+} Pe_Test_Dos_Header;
+
+typedef struct Pe_Test_File_Header {
+    uint16_t Machine;
+    uint16_t NumberOfSections;
+    uint32_t TimeDateStamp;
+    uint32_t PointerToSymbolTable;
+    uint32_t NumberOfSymbols;
+    uint16_t SizeOfOptionalHeader;
+    uint16_t Characteristics;
+} Pe_Test_File_Header;
+
+typedef struct Pe_Test_Data_Directory {
+    uint32_t VirtualAddress;
+    uint32_t Size;
+} Pe_Test_Data_Directory;
+
+typedef struct Pe_Test_Optional_Header64 {
+    uint16_t Magic;
+    uint8_t  MajorLinkerVersion;
+    uint8_t  MinorLinkerVersion;
+    uint32_t SizeOfCode;
+    uint32_t SizeOfInitializedData;
+    uint32_t SizeOfUninitializedData;
+    uint32_t AddressOfEntryPoint;
+    uint32_t BaseOfCode;
+    uint64_t ImageBase;
+    uint32_t SectionAlignment;
+    uint32_t FileAlignment;
+    uint16_t MajorOperatingSystemVersion;
+    uint16_t MinorOperatingSystemVersion;
+    uint16_t MajorImageVersion;
+    uint16_t MinorImageVersion;
+    uint16_t MajorSubsystemVersion;
+    uint16_t MinorSubsystemVersion;
+    uint32_t Win32VersionValue;
+    uint32_t SizeOfImage;
+    uint32_t SizeOfHeaders;
+    uint32_t CheckSum;
+    uint16_t Subsystem;
+    uint16_t DllCharacteristics;
+    uint64_t SizeOfStackReserve;
+    uint64_t SizeOfStackCommit;
+    uint64_t SizeOfHeapReserve;
+    uint64_t SizeOfHeapCommit;
+    uint32_t LoaderFlags;
+    uint32_t NumberOfRvaAndSizes;
+    Pe_Test_Data_Directory DataDirectory[16];
+} Pe_Test_Optional_Header64;
+
+typedef struct Pe_Test_Section_Header {
+    uint8_t  Name[8];
+    uint32_t VirtualSize;
+    uint32_t VirtualAddress;
+    uint32_t SizeOfRawData;
+    uint32_t PointerToRawData;
+    uint32_t PointerToRelocations;
+    uint32_t PointerToLinenumbers;
+    uint16_t NumberOfRelocations;
+    uint16_t NumberOfLinenumbers;
+    uint32_t Characteristics;
+} Pe_Test_Section_Header;
+#pragma pack(pop)
+
 static void emit_dummy_elf_with_addend(Ny_Object_Buffer *obj_buf, const char *fn_name, bool add_reloc, const char *reloc_target, int64_t addend) {
     X86_Encoded_Module emod;
     x86_encoded_mod_init(&emod, ny_str("dummy_elf"));
@@ -331,7 +457,6 @@ void test_nylink_relocation_application(void) {
 void test_nylink_relocation_pc32_overflow(void) {
     Ny_Object_Buffer obj1;
     ny_obj_buf_init(&obj1);
-    /* Set massive addend to force 32-bit PC-relative overflow */
     emit_dummy_elf_with_addend(&obj1, "far_caller", true, "far_target", 0x10000000000LL);
 
     Ny_Object_Buffer obj2;
@@ -389,15 +514,28 @@ void test_nylink_elf64_executable_emission(void) {
     TEST_ASSERT(nylink_write_executable(ctx, out_exe, &cfg));
     TEST_ASSERT(!nylink_has_errors(ctx));
 
-    /* Verify written ELF binary */
+    /* Parse and strictly validate ELF64 header and program headers */
     FILE *f = fopen(out_exe, "rb");
     TEST_ASSERT(f != nullptr);
-    uint8_t magic[4];
-    TEST_ASSERT_EQ(fread(magic, 1, 4, f), 4);
-    TEST_ASSERT_EQ(magic[0], 0x7F);
-    TEST_ASSERT_EQ(magic[1], 'E');
-    TEST_ASSERT_EQ(magic[2], 'L');
-    TEST_ASSERT_EQ(magic[3], 'F');
+
+    Elf64_Test_Ehdr ehdr;
+    TEST_ASSERT_EQ(fread(&ehdr, sizeof(ehdr), 1, f), 1);
+    TEST_ASSERT_EQ(ehdr.e_ident[0], 0x7F);
+    TEST_ASSERT_EQ(ehdr.e_ident[1], 'E');
+    TEST_ASSERT_EQ(ehdr.e_ident[2], 'L');
+    TEST_ASSERT_EQ(ehdr.e_ident[3], 'F');
+    TEST_ASSERT_EQ(ehdr.e_type, 2); /* ET_EXEC */
+    TEST_ASSERT_EQ(ehdr.e_machine, 62); /* EM_X86_64 */
+    TEST_ASSERT_EQ(ehdr.e_entry, nylink_symbol_get_final_va(ctx, nylink_find_symbol(ctx, "elf_main")->id));
+    TEST_ASSERT(ehdr.e_phnum >= 1);
+
+    Elf64_Test_Phdr phdrs[4];
+    fseek(f, (long)ehdr.e_phoff, SEEK_SET);
+    TEST_ASSERT_EQ(fread(phdrs, sizeof(Elf64_Test_Phdr), ehdr.e_phnum, f), ehdr.e_phnum);
+    TEST_ASSERT_EQ(phdrs[0].p_type, 1); /* PT_LOAD */
+    TEST_ASSERT_EQ(phdrs[0].p_flags, 5); /* PF_R | PF_X */
+    TEST_ASSERT_EQ(phdrs[0].p_vaddr, 0x400000);
+
     fclose(f);
     remove(out_exe);
 
@@ -433,21 +571,42 @@ void test_nylink_pe_executable_emission(void) {
     TEST_ASSERT(nylink_write_executable(ctx, out_exe, &cfg));
     TEST_ASSERT(!nylink_has_errors(ctx));
 
-    /* Verify written PE binary */
+    /* Parse and strictly validate PE32+ header and section headers */
     FILE *f = fopen(out_exe, "rb");
     TEST_ASSERT(f != nullptr);
-    uint8_t dos_sig[2];
-    TEST_ASSERT_EQ(fread(dos_sig, 1, 2, f), 2);
-    TEST_ASSERT_EQ(dos_sig[0], 'M');
-    TEST_ASSERT_EQ(dos_sig[1], 'Z');
 
-    fseek(f, 0x80, SEEK_SET);
-    uint8_t pe_sig[4];
-    TEST_ASSERT_EQ(fread(pe_sig, 1, 4, f), 4);
-    TEST_ASSERT_EQ(pe_sig[0], 'P');
-    TEST_ASSERT_EQ(pe_sig[1], 'E');
-    TEST_ASSERT_EQ(pe_sig[2], 0);
-    TEST_ASSERT_EQ(pe_sig[3], 0);
+    Pe_Test_Dos_Header dos_hdr;
+    TEST_ASSERT_EQ(fread(&dos_hdr, sizeof(dos_hdr), 1, f), 1);
+    TEST_ASSERT_EQ(dos_hdr.e_magic, 0x5A4D); /* MZ */
+    TEST_ASSERT_EQ(dos_hdr.e_lfanew, 0x80);
+
+    fseek(f, (long)dos_hdr.e_lfanew, SEEK_SET);
+    uint32_t pe_sig = 0;
+    TEST_ASSERT_EQ(fread(&pe_sig, 4, 1, f), 1);
+    TEST_ASSERT_EQ(pe_sig, 0x00004550); /* PE\0\0 */
+
+    Pe_Test_File_Header fhdr;
+    TEST_ASSERT_EQ(fread(&fhdr, sizeof(fhdr), 1, f), 1);
+    TEST_ASSERT_EQ(fhdr.Machine, 0x8664); /* AMD64 */
+    TEST_ASSERT_EQ(fhdr.TimeDateStamp, 0); /* Deterministic zero timestamp */
+    TEST_ASSERT_EQ(fhdr.NumberOfSymbols, 0); /* Executable image has no symbol table */
+    TEST_ASSERT_EQ(fhdr.PointerToSymbolTable, 0);
+
+    Pe_Test_Optional_Header64 opt;
+    TEST_ASSERT_EQ(fread(&opt, sizeof(opt), 1, f), 1);
+    TEST_ASSERT_EQ(opt.Magic, 0x20B); /* PE32+ */
+    TEST_ASSERT_EQ(opt.ImageBase, 0x140000000ULL);
+    TEST_ASSERT_EQ(opt.SectionAlignment, 0x1000);
+    TEST_ASSERT_EQ(opt.FileAlignment, 0x200);
+    TEST_ASSERT_EQ(opt.Subsystem, 3); /* Windows CUI */
+    TEST_ASSERT(opt.AddressOfEntryPoint >= 0x1000);
+
+    Pe_Test_Section_Header shdr;
+    TEST_ASSERT_EQ(fread(&shdr, sizeof(shdr), 1, f), 1);
+    TEST_ASSERT_STR_EQ((const char *)shdr.Name, ".text");
+    TEST_ASSERT(shdr.Characteristics & 0x20000000); /* MEM_EXECUTE */
+    TEST_ASSERT_EQ(shdr.NumberOfRelocations, 0);
+
     fclose(f);
     remove(out_exe);
 
@@ -456,14 +615,99 @@ void test_nylink_pe_executable_emission(void) {
     ny_obj_buf_destroy(&obj1);
 }
 
+void test_nylink_deterministic_emission(void) {
+    Ny_Object_Buffer obj1;
+    ny_obj_buf_init(&obj1);
+    emit_dummy_coff(&obj1, "det_main", true, "det_sub");
+
+    Ny_Object_Buffer obj2;
+    ny_obj_buf_init(&obj2);
+    emit_dummy_coff(&obj2, "det_sub", false, nullptr);
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .base_address = 0x140000000ULL,
+        .entry_point = "det_main",
+    };
+
+    /* Build 1 */
+    Nylink_Context *ctx1 = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx1, "o1.obj", obj1.bytes, obj1.count));
+    TEST_ASSERT(nylink_add_object(ctx1, "o2.obj", obj2.bytes, obj2.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx1));
+    TEST_ASSERT(nylink_layout(ctx1, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx1));
+    const char *out1 = "bin/test_det1.exe";
+    TEST_ASSERT(nylink_write_executable(ctx1, out1, &cfg));
+
+    /* Build 2 */
+    Nylink_Context *ctx2 = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx2, "o1.obj", obj1.bytes, obj1.count));
+    TEST_ASSERT(nylink_add_object(ctx2, "o2.obj", obj2.bytes, obj2.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx2));
+    TEST_ASSERT(nylink_layout(ctx2, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx2));
+    const char *out2 = "bin/test_det2.exe";
+    TEST_ASSERT(nylink_write_executable(ctx2, out2, &cfg));
+
+    /* Compare byte-for-byte */
+    FILE *f1 = fopen(out1, "rb");
+    FILE *f2 = fopen(out2, "rb");
+    TEST_ASSERT(f1 != nullptr && f2 != nullptr);
+
+    fseek(f1, 0, SEEK_END);
+    fseek(f2, 0, SEEK_END);
+    long sz1 = ftell(f1);
+    long sz2 = ftell(f2);
+    TEST_ASSERT_EQ(sz1, sz2);
+
+    fseek(f1, 0, SEEK_SET);
+    fseek(f2, 0, SEEK_SET);
+    uint8_t b1[512], b2[512];
+    while (sz1 > 0) {
+        size_t n = sz1 > 512 ? 512 : (size_t)sz1;
+        TEST_ASSERT_EQ(fread(b1, 1, n, f1), n);
+        TEST_ASSERT_EQ(fread(b2, 1, n, f2), n);
+        TEST_ASSERT_EQ(memcmp(b1, b2, n), 0);
+        sz1 -= n;
+    }
+
+    fclose(f2);
+    fclose(f1);
+    remove(out2);
+    remove(out1);
+
+    nylink_context_destroy(ctx2);
+    nylink_context_destroy(ctx1);
+    ny_obj_buf_destroy(&obj2);
+    ny_obj_buf_destroy(&obj1);
+}
+
+void test_nylink_negative_validation_cases(void) {
+    /* Test 1: Entry point outside .text */
+    Ny_Object_Buffer obj;
+    ny_obj_buf_init(&obj);
+    emit_dummy_elf(&obj, "valid_func", false, nullptr);
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "obj.o", obj.bytes, obj.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    Nylink_Config cfg_invalid_entry = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .base_address = 0x400000,
+        .entry_point = "nonexistent_entry",
+    };
+    TEST_ASSERT(!nylink_layout(ctx, &cfg_invalid_entry));
+    TEST_ASSERT(nylink_has_errors(ctx));
+    TEST_ASSERT(nylink_get_diagnostic_count(ctx) > 0);
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj);
+}
+
 void test_nylink_e2e_multi_object_execution(void) {
 #if defined(_WIN32)
-    /* Test creating two COFF objects:
-       Object 1 (sub):
-         fn_add(a, b): returns a + b
-       Object 2 (main):
-         main(): calls fn_add(20, 22), returns 42
-    */
     X86_Encoded_Module emod_sub;
     x86_encoded_mod_init(&emod_sub, ny_str("emod_sub"));
 
@@ -494,7 +738,7 @@ void test_nylink_e2e_multi_object_execution(void) {
        sub rsp, 40 (shadow space)
        mov ecx, 20
        mov edx, 22
-       call fn_add (rel32 at offset 13)
+       call fn_add (rel32 at offset 15, instruction ends at 19)
        add rsp, 40
        ret
        bytes: 48 83 ec 28 b9 14 00 00 00 ba 16 00 00 00 e8 00 00 00 00 48 83 c4 28 c3
@@ -546,9 +790,32 @@ void test_nylink_e2e_multi_object_execution(void) {
     TEST_ASSERT(nylink_layout(ctx, &cfg));
     TEST_ASSERT(nylink_apply_relocations(ctx));
 
+    /* Verify patched call displacement:
+       fn_add is at offset 0 of sub.obj. In .text layout, sub is laid out first, main is laid out second.
+       fn_add VA = 0x140001000
+       main VA = 0x140001000 + align_up(5, 16) = 0x140001010
+       call site at main + 15 = 0x14000101f
+       displacement = target (0x140001000) - (call_site (0x14000101f) + 4)
+                    = 0x140001000 - 0x140001023 = -0x23 (-35) = 0xffffffdd
+    */
     const char *out_exe = "bin/test_nylink_run.exe";
     TEST_ASSERT(nylink_write_executable(ctx, out_exe, &cfg));
     TEST_ASSERT(!nylink_has_errors(ctx));
+
+    /* Verify patched call displacement in emitted binary:
+       In PE, file alignment is 0x200, headers take 0x400.
+       .text section raw data is at offset 0x400.
+       fn_add (sub.obj) is at 0x400.
+       main (main.obj) is aligned to 16, so offset is 0x410.
+       call site relative operand is at 0x410 + 15 = 0x41f.
+    */
+    FILE *fexe = fopen(out_exe, "rb");
+    TEST_ASSERT(fexe != nullptr);
+    fseek(fexe, 0x41F, SEEK_SET);
+    uint32_t patched_disp = 0;
+    TEST_ASSERT_EQ(fread(&patched_disp, 4, 1, fexe), 1);
+    fclose(fexe);
+    TEST_ASSERT_EQ(patched_disp, 0xffffffdd);
 
     int ret = system("bin\\test_nylink_run.exe");
     TEST_ASSERT_EQ(ret, 42);

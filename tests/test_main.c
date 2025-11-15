@@ -140,6 +140,8 @@ void test_nylink_relocation_application(void);
 void test_nylink_relocation_pc32_overflow(void);
 void test_nylink_elf64_executable_emission(void);
 void test_nylink_pe_executable_emission(void);
+void test_nylink_deterministic_emission(void);
+void test_nylink_negative_validation_cases(void);
 void test_nylink_e2e_multi_object_execution(void);
 
 int main(void) {
@@ -280,6 +282,8 @@ int main(void) {
     RUN_TEST(test_nylink_relocation_pc32_overflow);
     RUN_TEST(test_nylink_elf64_executable_emission);
     RUN_TEST(test_nylink_pe_executable_emission);
+    RUN_TEST(test_nylink_deterministic_emission);
+    RUN_TEST(test_nylink_negative_validation_cases);
     RUN_TEST(test_nylink_e2e_multi_object_execution);
 
     if (g_tests_failed > 0) {

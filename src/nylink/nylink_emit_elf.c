@@ -86,11 +86,6 @@ bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, cons
         return false;
     }
 
-    /* Program headers:
-       PHDR 0: PT_LOAD RX (ELF header + .text)
-       PHDR 1: PT_LOAD R  (.rodata)
-       PHDR 2: PT_LOAD RW (.data + .bss)
-    */
     Elf64_Phdr phdrs[3];
     memset(phdrs, 0, sizeof(phdrs));
     uint16_t phnum = 0;
@@ -112,7 +107,7 @@ bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, cons
     phdrs[phnum].p_align = 0x1000;
     phnum++;
 
-    /* Read-only data segment */
+    /* Read-only data segment (only emitted if populated) */
     if (sec_rodata->mem_size > 0) {
         phdrs[phnum].p_type = PT_LOAD;
         phdrs[phnum].p_flags = PF_R;
@@ -125,7 +120,7 @@ bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, cons
         phnum++;
     }
 
-    /* Writable data / bss segment */
+    /* Writable data / bss segment (only emitted if populated) */
     if (sec_data->mem_size > 0 || sec_bss->mem_size > 0) {
         uint64_t start_va = (sec_data->mem_size > 0) ? sec_data->va : sec_bss->va;
         uint64_t file_off = (sec_data->mem_size > 0) ? sec_data->file_offset : 0;
@@ -144,77 +139,93 @@ bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, cons
     }
 
     /* Build shstrtab */
-    char shstrtab[128];
+    char shstrtab[256];
     memset(shstrtab, 0, sizeof(shstrtab));
-    size_t shstrtab_len = 1; /* first byte is null */
+    size_t shstrtab_len = 1;
 
+    Elf64_Shdr shdrs[6];
+    memset(shdrs, 0, sizeof(shdrs));
+    uint16_t shnum = 1; /* index 0 is always SHT_NULL */
+
+    /* .text */
     uint32_t name_text = (uint32_t)shstrtab_len;
     strcpy(shstrtab + shstrtab_len, ".text");
     shstrtab_len += strlen(".text") + 1;
 
-    uint32_t name_rodata = (uint32_t)shstrtab_len;
-    strcpy(shstrtab + shstrtab_len, ".rodata");
-    shstrtab_len += strlen(".rodata") + 1;
+    shdrs[shnum].sh_name = name_text;
+    shdrs[shnum].sh_type = SHT_PROGBITS;
+    shdrs[shnum].sh_flags = SHF_ALLOC | SHF_EXECINSTR;
+    shdrs[shnum].sh_addr = sec_text->va;
+    shdrs[shnum].sh_offset = sec_text->file_offset;
+    shdrs[shnum].sh_size = sec_text->file_size;
+    shdrs[shnum].sh_addralign = sec_text->align;
+    shnum++;
 
-    uint32_t name_data = (uint32_t)shstrtab_len;
-    strcpy(shstrtab + shstrtab_len, ".data");
-    shstrtab_len += strlen(".data") + 1;
+    /* .rodata */
+    if (sec_rodata->mem_size > 0) {
+        uint32_t name_rodata = (uint32_t)shstrtab_len;
+        strcpy(shstrtab + shstrtab_len, ".rodata");
+        shstrtab_len += strlen(".rodata") + 1;
 
-    uint32_t name_bss = (uint32_t)shstrtab_len;
-    strcpy(shstrtab + shstrtab_len, ".bss");
-    shstrtab_len += strlen(".bss") + 1;
+        shdrs[shnum].sh_name = name_rodata;
+        shdrs[shnum].sh_type = SHT_PROGBITS;
+        shdrs[shnum].sh_flags = SHF_ALLOC;
+        shdrs[shnum].sh_addr = sec_rodata->va;
+        shdrs[shnum].sh_offset = sec_rodata->file_offset;
+        shdrs[shnum].sh_size = sec_rodata->file_size;
+        shdrs[shnum].sh_addralign = sec_rodata->align;
+        shnum++;
+    }
 
+    /* .data */
+    if (sec_data->mem_size > 0) {
+        uint32_t name_data = (uint32_t)shstrtab_len;
+        strcpy(shstrtab + shstrtab_len, ".data");
+        shstrtab_len += strlen(".data") + 1;
+
+        shdrs[shnum].sh_name = name_data;
+        shdrs[shnum].sh_type = SHT_PROGBITS;
+        shdrs[shnum].sh_flags = SHF_ALLOC | SHF_WRITE;
+        shdrs[shnum].sh_addr = sec_data->va;
+        shdrs[shnum].sh_offset = sec_data->file_offset;
+        shdrs[shnum].sh_size = sec_data->file_size;
+        shdrs[shnum].sh_addralign = sec_data->align;
+        shnum++;
+    }
+
+    /* .bss */
+    if (sec_bss->mem_size > 0) {
+        uint32_t name_bss = (uint32_t)shstrtab_len;
+        strcpy(shstrtab + shstrtab_len, ".bss");
+        shstrtab_len += strlen(".bss") + 1;
+
+        shdrs[shnum].sh_name = name_bss;
+        shdrs[shnum].sh_type = SHT_NOBITS;
+        shdrs[shnum].sh_flags = SHF_ALLOC | SHF_WRITE;
+        shdrs[shnum].sh_addr = sec_bss->va;
+        shdrs[shnum].sh_offset = sec_bss->file_offset;
+        shdrs[shnum].sh_size = sec_bss->mem_size;
+        shdrs[shnum].sh_addralign = sec_bss->align;
+        shnum++;
+    }
+
+    /* .shstrtab */
     uint32_t name_shstrtab = (uint32_t)shstrtab_len;
     strcpy(shstrtab + shstrtab_len, ".shstrtab");
     shstrtab_len += strlen(".shstrtab") + 1;
 
-    /* Section headers: 0: NULL, 1: .text, 2: .rodata, 3: .data, 4: .bss, 5: .shstrtab */
-    Elf64_Shdr shdrs[6];
-    memset(shdrs, 0, sizeof(shdrs));
-
-    shdrs[1].sh_name = name_text;
-    shdrs[1].sh_type = SHT_PROGBITS;
-    shdrs[1].sh_flags = SHF_ALLOC | SHF_EXECINSTR;
-    shdrs[1].sh_addr = sec_text->va;
-    shdrs[1].sh_offset = sec_text->file_offset;
-    shdrs[1].sh_size = sec_text->file_size;
-    shdrs[1].sh_addralign = sec_text->align;
-
-    shdrs[2].sh_name = name_rodata;
-    shdrs[2].sh_type = SHT_PROGBITS;
-    shdrs[2].sh_flags = SHF_ALLOC;
-    shdrs[2].sh_addr = sec_rodata->va;
-    shdrs[2].sh_offset = sec_rodata->file_offset;
-    shdrs[2].sh_size = sec_rodata->file_size;
-    shdrs[2].sh_addralign = sec_rodata->align;
-
-    shdrs[3].sh_name = name_data;
-    shdrs[3].sh_type = SHT_PROGBITS;
-    shdrs[3].sh_flags = SHF_ALLOC | SHF_WRITE;
-    shdrs[3].sh_addr = sec_data->va;
-    shdrs[3].sh_offset = sec_data->file_offset;
-    shdrs[3].sh_size = sec_data->file_size;
-    shdrs[3].sh_addralign = sec_data->align;
-
-    shdrs[4].sh_name = name_bss;
-    shdrs[4].sh_type = SHT_NOBITS;
-    shdrs[4].sh_flags = SHF_ALLOC | SHF_WRITE;
-    shdrs[4].sh_addr = sec_bss->va;
-    shdrs[4].sh_offset = sec_bss->file_offset;
-    shdrs[4].sh_size = sec_bss->mem_size;
-    shdrs[4].sh_addralign = sec_bss->align;
-
+    uint16_t shstrtab_idx = shnum;
     uint64_t shstrtab_offset = ctx->total_file_size;
-    shdrs[5].sh_name = name_shstrtab;
-    shdrs[5].sh_type = SHT_STRTAB;
-    shdrs[5].sh_flags = 0;
-    shdrs[5].sh_addr = 0;
-    shdrs[5].sh_offset = shstrtab_offset;
-    shdrs[5].sh_size = shstrtab_len;
-    shdrs[5].sh_addralign = 1;
+    shdrs[shnum].sh_name = name_shstrtab;
+    shdrs[shnum].sh_type = SHT_STRTAB;
+    shdrs[shnum].sh_flags = 0;
+    shdrs[shnum].sh_addr = 0;
+    shdrs[shnum].sh_offset = shstrtab_offset;
+    shdrs[shnum].sh_size = shstrtab_len;
+    shdrs[shnum].sh_addralign = 1;
+    shnum++;
 
-    uint64_t shoff = shstrtab_offset + shstrtab_len;
-    shoff = (shoff + 7) & ~7ULL; /* 8-byte aligned */
+    uint64_t shoff = (shstrtab_offset + shstrtab_len + 7) & ~7ULL;
 
     Elf64_Ehdr ehdr;
     memset(&ehdr, 0, sizeof(ehdr));
@@ -235,8 +246,8 @@ bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, cons
     ehdr.e_phentsize = sizeof(Elf64_Phdr);
     ehdr.e_phnum = phnum;
     ehdr.e_shentsize = sizeof(Elf64_Shdr);
-    ehdr.e_shnum = 6;
-    ehdr.e_shstrndx = 5;
+    ehdr.e_shnum = shnum;
+    ehdr.e_shstrndx = shstrtab_idx;
 
     /* Write ELF Header and Program Headers */
     fwrite(&ehdr, sizeof(ehdr), 1, f);
@@ -312,7 +323,7 @@ bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, cons
     }
 
     /* Write Section Headers */
-    fwrite(shdrs, sizeof(Elf64_Shdr), 6, f);
+    fwrite(shdrs, sizeof(Elf64_Shdr), shnum, f);
 
     fclose(f);
     return true;

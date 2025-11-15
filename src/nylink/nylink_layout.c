@@ -18,7 +18,6 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
     if (!ctx) return false;
 
     if (!ctx->is_laid_out) {
-        /* Initialize the 4 output sections: .text, .rodata, .data, .bss */
         ctx->out_sections[0] = (Nylink_Output_Section){ .kind = NYLINK_SEC_TEXT, .name = ".text", .align = 16 };
         ctx->out_sections[1] = (Nylink_Output_Section){ .kind = NYLINK_SEC_RODATA, .name = ".rodata", .align = 16 };
         ctx->out_sections[2] = (Nylink_Output_Section){ .kind = NYLINK_SEC_DATA, .name = ".data", .align = 16 };
@@ -94,7 +93,7 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         base_va = (cfg->base_address != 0) ? cfg->base_address : 0x140000000ULL;
         page_size = 0x1000;
         file_align = 0x200;
-        header_file_size = 0x400; /* DOS header + PE headers fit comfortably within 0x400 */
+        header_file_size = 0x400;
     } else {
         /* ELF64 */
         base_va = (cfg && cfg->base_address != 0) ? cfg->base_address : 0x400000ULL;
@@ -130,6 +129,11 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         current_rva += align_up_checked(out_sec->mem_size, page_size, &overflow);
     }
 
+    if (overflow) {
+        nylink_diag_add(ctx, "layout error: address or file offset overflow", nullptr, nullptr);
+        return false;
+    }
+
     ctx->total_file_size = current_file_off;
 
     /* Phase 3: Compute final VA for each input section and symbol */
@@ -144,6 +148,7 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         ctx->resolved_symbols = (Nylink_Resolved_Sym *)ny_alloc_zero(ctx->symbol_count * sizeof(Nylink_Resolved_Sym));
     }
 
+    /* Assign VAs to directly defined symbols */
     for (size_t s = 0; s < ctx->symbol_count; s++) {
         Nylink_Symbol *sym = &ctx->symbols[s];
         ctx->resolved_symbols[s].sym_id = sym->id;
@@ -157,24 +162,44 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         }
     }
 
+    /* Propagate final_va to undefined references from resolved global/weak definitions */
+    for (size_t s = 0; s < ctx->symbol_count; s++) {
+        Nylink_Symbol *sym = &ctx->symbols[s];
+        if (!sym->is_defined && sym->name && sym->name[0] != '\0') {
+            const Nylink_Symbol *def_sym = nylink_find_symbol(ctx, sym->name);
+            if (def_sym && def_sym->is_defined) {
+                ctx->resolved_symbols[s].final_va = ctx->resolved_symbols[def_sym->id].final_va;
+                ctx->resolved_symbols[s].is_defined = true;
+            }
+        }
+    }
+
     /* Phase 4: Resolve entry point */
     const char *entry_name = (cfg && cfg->entry_point) ? cfg->entry_point : "main";
     const Nylink_Symbol *entry_sym = nylink_find_symbol(ctx, entry_name);
     if (!entry_sym) {
-        /* If "main" not found, check "_start" */
         entry_sym = nylink_find_symbol(ctx, "_start");
     }
 
-    if (entry_sym && entry_sym->is_defined) {
-        ctx->entry_point_va = ctx->resolved_symbols[entry_sym->id].final_va;
-    } else {
-        /* Entry point symbol undefined */
+    if (!entry_sym || !entry_sym->is_defined) {
         char msg[256];
         snprintf(msg, sizeof(msg), "entry point '%s' not defined", entry_name);
         nylink_diag_add(ctx, msg, nullptr, entry_name);
         return false;
     }
 
+    uint64_t entry_va = ctx->resolved_symbols[entry_sym->id].final_va;
+    const Nylink_Output_Section *sec_text = &ctx->out_sections[0];
+    if (sec_text->mem_size == 0 || entry_va < sec_text->va || entry_va >= (sec_text->va + sec_text->mem_size)) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "entry point '%s' (0x%llx) is outside .text section (0x%llx - 0x%llx)",
+                 entry_name, (unsigned long long)entry_va,
+                 (unsigned long long)sec_text->va, (unsigned long long)(sec_text->va + sec_text->mem_size));
+        nylink_diag_add(ctx, msg, nullptr, entry_name);
+        return false;
+    }
+
+    ctx->entry_point_va = entry_va;
     ctx->is_laid_out = true;
     return true;
 }
