@@ -143,6 +143,12 @@ void test_nylink_pe_executable_emission(void);
 void test_nylink_deterministic_emission(void);
 void test_nylink_negative_validation_cases(void);
 void test_nylink_e2e_multi_object_execution(void);
+void test_nylink_archive_single_member_extraction(void);
+void test_nylink_archive_unused_members(void);
+void test_nylink_archive_chained_dependencies(void);
+void test_nylink_archive_cyclic_dependencies(void);
+void test_nylink_archive_malformed_and_bounds(void);
+void test_nylink_archive_e2e_execution(void);
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -285,6 +291,12 @@ int main(void) {
     RUN_TEST(test_nylink_deterministic_emission);
     RUN_TEST(test_nylink_negative_validation_cases);
     RUN_TEST(test_nylink_e2e_multi_object_execution);
+    RUN_TEST(test_nylink_archive_single_member_extraction);
+    RUN_TEST(test_nylink_archive_unused_members);
+    RUN_TEST(test_nylink_archive_chained_dependencies);
+    RUN_TEST(test_nylink_archive_cyclic_dependencies);
+    RUN_TEST(test_nylink_archive_malformed_and_bounds);
+    RUN_TEST(test_nylink_archive_e2e_execution);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

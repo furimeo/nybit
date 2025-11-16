@@ -50,6 +50,32 @@ void nylink_context_destroy(Nylink_Context *ctx) {
         ny_free(ctx->objects, ctx->object_capacity * sizeof(Nylink_Object));
     }
 
+    for (size_t a = 0; a < ctx->archive_count; a++) {
+        Nylink_Archive *arch = &ctx->archives[a];
+        if (arch->name) {
+            ny_free(arch->name, strlen(arch->name) + 1);
+        }
+        for (size_t m = 0; m < arch->member_count; m++) {
+            if (arch->members[m].name) {
+                ny_free(arch->members[m].name, strlen(arch->members[m].name) + 1);
+            }
+        }
+        if (arch->members) {
+            ny_free(arch->members, arch->member_capacity * sizeof(Nylink_Archive_Member));
+        }
+        for (size_t s = 0; s < arch->symbol_count; s++) {
+            if (arch->symbols[s].name) {
+                ny_free(arch->symbols[s].name, strlen(arch->symbols[s].name) + 1);
+            }
+        }
+        if (arch->symbols) {
+            ny_free(arch->symbols, arch->symbol_capacity * sizeof(Nylink_Archive_Symbol));
+        }
+    }
+    if (ctx->archives) {
+        ny_free(ctx->archives, ctx->archive_capacity * sizeof(Nylink_Archive));
+    }
+
     for (size_t i = 0; i < ctx->section_count; i++) {
         Nylink_Section *sec = &ctx->sections[i];
         if (sec->name) {
@@ -141,8 +167,35 @@ bool nylink_add_object(Nylink_Context *ctx, const char *name, const uint8_t *dat
     return false;
 }
 
+bool nylink_add_archive(Nylink_Context *ctx, const char *name, const uint8_t *data, size_t size) {
+    if (!ctx) return false;
+    const char *arch_name = name ? name : "<unnamed_archive>";
+
+    if (!data || size < 8) {
+        nylink_diag_add(ctx, "corrupt or truncated archive: insufficient size", arch_name, nullptr);
+        return false;
+    }
+
+    ny_buf_grow((void **)&ctx->archives, &ctx->archive_capacity, ctx->archive_count, sizeof(Nylink_Archive));
+    uint32_t arch_idx = (uint32_t)ctx->archive_count++;
+    Nylink_Archive *arch = &ctx->archives[arch_idx];
+    memset(arch, 0, sizeof(Nylink_Archive));
+
+    size_t name_len = strlen(arch_name);
+    arch->name = (char *)ny_alloc(name_len + 1);
+    memcpy(arch->name, arch_name, name_len + 1);
+    arch->data = data;
+    arch->size = size;
+
+    return nylink_read_archive(ctx, arch_idx);
+}
+
 bool nylink_resolve_symbols(Nylink_Context *ctx) {
     if (!ctx) return false;
+
+    if (!nylink_extract_needed_archive_members(ctx)) {
+        return false;
+    }
 
     typedef struct Resolved_Ref {
         const char *name;
@@ -252,6 +305,15 @@ bool nylink_write_executable(Nylink_Context *ctx, const char *out_path, const Ny
     } else {
         return nylink_write_elf_executable(ctx, out_path, cfg);
     }
+}
+
+size_t nylink_get_object_count(const Nylink_Context *ctx) {
+    return ctx ? ctx->object_count : 0;
+}
+
+const char *nylink_get_object_name(const Nylink_Context *ctx, size_t index) {
+    if (!ctx || index >= ctx->object_count) return nullptr;
+    return ctx->objects[index].name;
 }
 
 size_t nylink_get_section_count(const Nylink_Context *ctx) {

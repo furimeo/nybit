@@ -91,10 +91,14 @@ Nylink_Context *nylink_context_create(void);
 void nylink_context_destroy(Nylink_Context *ctx);
 
 bool nylink_add_object(Nylink_Context *ctx, const char *name, const uint8_t *data, size_t size);
+bool nylink_add_archive(Nylink_Context *ctx, const char *name, const uint8_t *data, size_t size);
 bool nylink_resolve_symbols(Nylink_Context *ctx);
 bool nylink_layout(Nylink_Context *ctx, const Nylink_Config *cfg);
 bool nylink_apply_relocations(Nylink_Context *ctx);
 bool nylink_write_executable(Nylink_Context *ctx, const char *out_path, const Nylink_Config *cfg);
+
+size_t nylink_get_object_count(const Nylink_Context *ctx);
+const char *nylink_get_object_name(const Nylink_Context *ctx, size_t index);
 
 size_t nylink_get_section_count(const Nylink_Context *ctx);
 const Nylink_Section *nylink_get_section(const Nylink_Context *ctx, size_t index);

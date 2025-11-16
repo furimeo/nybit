@@ -826,3 +826,401 @@ void test_nylink_e2e_multi_object_execution(void) {
     ny_obj_buf_destroy(&obj_sub);
 #endif
 }
+
+static void build_test_archive(Ny_Object_Buffer *ar_buf, const char **member_names, const Ny_Object_Buffer *member_objs, size_t count) {
+    ny_obj_buf_init(ar_buf);
+    ny_obj_buf_append_bytes(ar_buf, (const uint8_t *)"!<arch>\n", 8);
+
+    for (size_t i = 0; i < count; i++) {
+        char hdr[60];
+        memset(hdr, ' ', sizeof(hdr));
+
+        char name_slash[17];
+        snprintf(name_slash, sizeof(name_slash), "%s/", member_names[i]);
+        size_t nlen = strlen(name_slash);
+        if (nlen > 16) nlen = 16;
+        memcpy(hdr, name_slash, nlen);
+
+        /* Timestamp */
+        memcpy(hdr + 16, "0           ", 12);
+        /* UID, GID, Mode */
+        memcpy(hdr + 28, "0     ", 6);
+        memcpy(hdr + 34, "0     ", 6);
+        memcpy(hdr + 40, "644     ", 8);
+
+        char size_str[11];
+        snprintf(size_str, sizeof(size_str), "%-10zu", member_objs[i].count);
+        memcpy(hdr + 48, size_str, 10);
+
+        hdr[58] = '`';
+        hdr[59] = '\n';
+
+        ny_obj_buf_append_bytes(ar_buf, (const uint8_t *)hdr, 60);
+        ny_obj_buf_append_bytes(ar_buf, member_objs[i].bytes, member_objs[i].count);
+
+        if (member_objs[i].count & 1) {
+            ny_obj_buf_append_byte(ar_buf, '\n');
+        }
+    }
+}
+
+void test_nylink_archive_single_member_extraction(void) {
+    Ny_Object_Buffer obj_m1, obj_m2, obj_caller;
+    ny_obj_buf_init(&obj_m1);
+    ny_obj_buf_init(&obj_m2);
+    ny_obj_buf_init(&obj_caller);
+
+    emit_dummy_coff(&obj_m1, "needed_func", false, nullptr);
+    emit_dummy_coff(&obj_m2, "unused_func", false, nullptr);
+    emit_dummy_coff(&obj_caller, "main", true, "needed_func");
+
+    Ny_Object_Buffer ar_buf;
+    const char *names[] = { "m1.obj", "m2.obj" };
+    Ny_Object_Buffer objs[] = { obj_m1, obj_m2 };
+    build_test_archive(&ar_buf, names, objs, 2);
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "caller.obj", obj_caller.bytes, obj_caller.count));
+    TEST_ASSERT(nylink_add_archive(ctx, "mylib.lib", ar_buf.bytes, ar_buf.count));
+
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    /* Only caller.obj and m1.obj must be loaded; m2.obj was unused and must NOT be loaded */
+    TEST_ASSERT_EQ(nylink_get_object_count(ctx), 2);
+    TEST_ASSERT_STR_EQ(nylink_get_object_name(ctx, 0), "caller.obj");
+    TEST_ASSERT_STR_EQ(nylink_get_object_name(ctx, 1), "mylib.lib(m1.obj)");
+
+    const Nylink_Symbol *sym_needed = nylink_find_symbol(ctx, "needed_func");
+    TEST_ASSERT(sym_needed != nullptr && sym_needed->is_defined);
+
+    const Nylink_Symbol *sym_unused = nylink_find_symbol(ctx, "unused_func");
+    TEST_ASSERT(sym_unused == nullptr);
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .base_address = 0x140000000ULL,
+        .entry_point = "main",
+    };
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&ar_buf);
+    ny_obj_buf_destroy(&obj_caller);
+    ny_obj_buf_destroy(&obj_m2);
+    ny_obj_buf_destroy(&obj_m1);
+}
+
+void test_nylink_archive_unused_members(void) {
+    Ny_Object_Buffer obj_m1, obj_m2, obj_standalone;
+    ny_obj_buf_init(&obj_m1);
+    ny_obj_buf_init(&obj_m2);
+    ny_obj_buf_init(&obj_standalone);
+
+    emit_dummy_elf(&obj_m1, "arch_fn1", false, nullptr);
+    emit_dummy_elf(&obj_m2, "arch_fn2", false, nullptr);
+    emit_dummy_elf(&obj_standalone, "main", false, nullptr);
+
+    Ny_Object_Buffer ar_buf;
+    const char *names[] = { "m1.o", "m2.o" };
+    Ny_Object_Buffer objs[] = { obj_m1, obj_m2 };
+    build_test_archive(&ar_buf, names, objs, 2);
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "standalone.o", obj_standalone.bytes, obj_standalone.count));
+    TEST_ASSERT(nylink_add_archive(ctx, "libunused.a", ar_buf.bytes, ar_buf.count));
+
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    /* Zero members extracted from archive */
+    TEST_ASSERT_EQ(nylink_get_object_count(ctx), 1);
+    TEST_ASSERT_STR_EQ(nylink_get_object_name(ctx, 0), "standalone.o");
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&ar_buf);
+    ny_obj_buf_destroy(&obj_standalone);
+    ny_obj_buf_destroy(&obj_m2);
+    ny_obj_buf_destroy(&obj_m1);
+}
+
+void test_nylink_archive_chained_dependencies(void) {
+    Ny_Object_Buffer obj_main, obj_a, obj_b;
+    ny_obj_buf_init(&obj_main);
+    ny_obj_buf_init(&obj_a);
+    ny_obj_buf_init(&obj_b);
+
+    /* main calls fn_a; fn_a calls fn_b; fn_b is leaf */
+    emit_dummy_elf(&obj_main, "main", true, "fn_a");
+    emit_dummy_elf(&obj_a, "fn_a", true, "fn_b");
+    emit_dummy_elf(&obj_b, "fn_b", false, nullptr);
+
+    Ny_Object_Buffer ar_buf;
+    const char *names[] = { "a.o", "b.o" };
+    Ny_Object_Buffer objs[] = { obj_a, obj_b };
+    build_test_archive(&ar_buf, names, objs, 2);
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "main.o", obj_main.bytes, obj_main.count));
+    TEST_ASSERT(nylink_add_archive(ctx, "libchain.a", ar_buf.bytes, ar_buf.count));
+
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    /* Both a.o and b.o must be extracted in cascading fixpoint */
+    TEST_ASSERT_EQ(nylink_get_object_count(ctx), 3);
+    TEST_ASSERT_STR_EQ(nylink_get_object_name(ctx, 0), "main.o");
+    TEST_ASSERT_STR_EQ(nylink_get_object_name(ctx, 1), "libchain.a(a.o)");
+    TEST_ASSERT_STR_EQ(nylink_get_object_name(ctx, 2), "libchain.a(b.o)");
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .base_address = 0x400000,
+        .entry_point = "main",
+    };
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&ar_buf);
+    ny_obj_buf_destroy(&obj_b);
+    ny_obj_buf_destroy(&obj_a);
+    ny_obj_buf_destroy(&obj_main);
+}
+
+void test_nylink_archive_cyclic_dependencies(void) {
+    Ny_Object_Buffer obj_main, obj_a, obj_b;
+    ny_obj_buf_init(&obj_main);
+    ny_obj_buf_init(&obj_a);
+    ny_obj_buf_init(&obj_b);
+
+    /* main calls fn_a; fn_a calls fn_b; fn_b calls fn_a_helper */
+    emit_dummy_elf(&obj_main, "main", true, "fn_a");
+
+    /* obj_a defines fn_a and fn_a_helper, calls fn_b */
+    X86_Encoded_Module emod_a;
+    x86_encoded_mod_init(&emod_a, ny_str("dummy_a"));
+    const uint8_t code_a[] = {
+        0xe8, 0x00, 0x00, 0x00, 0x00, 0xc3, /* fn_a: call fn_b; ret */
+        0x90, 0xc3                          /* fn_a_helper: nop; ret */
+    };
+    x86_buf_append_bytes(&emod_a.text_section, code_a, sizeof(code_a));
+    ny_buf_grow((void **)&emod_a.functions, &emod_a.function_capacity, 2, sizeof(X86_Function_Code));
+    emod_a.functions[emod_a.function_count++] = (X86_Function_Code){
+        .name = ny_str("fn_a"),
+        .offset = 0,
+        .size = 6,
+    };
+    emod_a.functions[emod_a.function_count++] = (X86_Function_Code){
+        .name = ny_str("fn_a_helper"),
+        .offset = 6,
+        .size = 2,
+    };
+    X86_Relocation reloc_a = {
+        .kind = X86_FIXUP_CALL_REL32,
+        .code_offset = 1,
+        .symbol_name = ny_str("fn_b"),
+        .addend = 0,
+    };
+    x86_buf_append_reloc(&emod_a.text_section, reloc_a);
+    Ny_Diagnostic_List diags_a;
+    ny_diagnostic_list_init(&diags_a);
+    TEST_ASSERT(ny_emit_elf64_x86_64(&obj_a, &emod_a, &diags_a));
+    ny_diagnostic_list_destroy(&diags_a);
+    x86_encoded_mod_destroy(&emod_a);
+
+    /* obj_b defines fn_b, calls fn_a_helper */
+    emit_dummy_elf(&obj_b, "fn_b", true, "fn_a_helper");
+
+    Ny_Object_Buffer ar_buf;
+    const char *names[] = { "a.o", "b.o" };
+    Ny_Object_Buffer objs[] = { obj_a, obj_b };
+    build_test_archive(&ar_buf, names, objs, 2);
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "main.o", obj_main.bytes, obj_main.count));
+    TEST_ASSERT(nylink_add_archive(ctx, "libcyclic.a", ar_buf.bytes, ar_buf.count));
+
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+    TEST_ASSERT_EQ(nylink_get_object_count(ctx), 3);
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .base_address = 0x400000,
+        .entry_point = "main",
+    };
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&ar_buf);
+    ny_obj_buf_destroy(&obj_b);
+    ny_obj_buf_destroy(&obj_a);
+    ny_obj_buf_destroy(&obj_main);
+}
+
+void test_nylink_archive_malformed_and_bounds(void) {
+    /* 1. Too small */
+    {
+        Nylink_Context *ctx = nylink_context_create();
+        const uint8_t tiny[4] = { '!', '<', 'a', 'r' };
+        TEST_ASSERT(!nylink_add_archive(ctx, "tiny.a", tiny, sizeof(tiny)));
+        TEST_ASSERT(nylink_has_errors(ctx));
+        nylink_context_destroy(ctx);
+    }
+
+    /* 2. Bad magic */
+    {
+        Nylink_Context *ctx = nylink_context_create();
+        const uint8_t bad_magic[8] = { 'N', 'O', 'T', 'A', 'R', 'C', 'H', '!' };
+        TEST_ASSERT(!nylink_add_archive(ctx, "bad.a", bad_magic, sizeof(bad_magic)));
+        TEST_ASSERT(nylink_has_errors(ctx));
+        nylink_context_destroy(ctx);
+    }
+
+    /* 3. Member header trailer corrupt */
+    {
+        Nylink_Context *ctx = nylink_context_create();
+        uint8_t corrupt[68];
+        memcpy(corrupt, "!<arch>\n", 8);
+        memset(corrupt + 8, ' ', 60);
+        memcpy(corrupt + 8 + 48, "0         ", 10);
+        corrupt[8 + 58] = 'X'; /* Invalid trailer */
+        corrupt[8 + 59] = 'Y';
+        TEST_ASSERT(!nylink_add_archive(ctx, "corrupt.a", corrupt, sizeof(corrupt)));
+        TEST_ASSERT(nylink_has_errors(ctx));
+        nylink_context_destroy(ctx);
+    }
+
+    /* 4. Member size out of bounds */
+    {
+        Nylink_Context *ctx = nylink_context_create();
+        uint8_t out_of_bounds[68];
+        memcpy(out_of_bounds, "!<arch>\n", 8);
+        memset(out_of_bounds + 8, ' ', 60);
+        memcpy(out_of_bounds + 8 + 48, "999999    ", 10);
+        out_of_bounds[8 + 58] = '`';
+        out_of_bounds[8 + 59] = '\n';
+        TEST_ASSERT(!nylink_add_archive(ctx, "oob.a", out_of_bounds, sizeof(out_of_bounds)));
+        TEST_ASSERT(nylink_has_errors(ctx));
+        nylink_context_destroy(ctx);
+    }
+}
+
+void test_nylink_archive_e2e_execution(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    /* sub function in archive:
+       returns ecx + edx
+       bytes: 8d 04 11 c3 (lea eax, [rcx + rdx]; ret)
+    */
+    X86_Encoded_Module emod_sub;
+    x86_encoded_mod_init(&emod_sub, ny_str("emod_sub"));
+    const uint8_t code_sub[] = { 0x8d, 0x04, 0x11, 0xc3 };
+    x86_buf_append_bytes(&emod_sub.text_section, code_sub, sizeof(code_sub));
+    ny_buf_grow((void **)&emod_sub.functions, &emod_sub.function_capacity, 1, sizeof(X86_Function_Code));
+    emod_sub.functions[emod_sub.function_count++] = (X86_Function_Code){
+        .name = ny_str("fn_arch_add"),
+        .offset = 0,
+        .size = sizeof(code_sub),
+    };
+
+    Ny_Object_Buffer obj_sub;
+    ny_obj_buf_init(&obj_sub);
+    Ny_Diagnostic_List diags_sub;
+    ny_diagnostic_list_init(&diags_sub);
+    TEST_ASSERT(ny_emit_coff_x86_64(&obj_sub, &emod_sub, &diags_sub));
+    ny_diagnostic_list_destroy(&diags_sub);
+    x86_encoded_mod_destroy(&emod_sub);
+
+    /* unused function in archive */
+    Ny_Object_Buffer obj_unused;
+    ny_obj_buf_init(&obj_unused);
+    emit_dummy_coff(&obj_unused, "fn_unused_in_lib", false, nullptr);
+
+    /* Package into archive mymath.lib */
+    Ny_Object_Buffer ar_buf;
+    const char *names[] = { "add.obj", "unused.obj" };
+    Ny_Object_Buffer objs[] = { obj_sub, obj_unused };
+    build_test_archive(&ar_buf, names, objs, 2);
+
+    /* main function:
+       sub rsp, 40
+       mov ecx, 20
+       mov edx, 22
+       call fn_arch_add
+       add rsp, 40
+       ret
+    */
+    X86_Encoded_Module emod_main;
+    x86_encoded_mod_init(&emod_main, ny_str("emod_main"));
+    const uint8_t code_main[] = {
+        0x48, 0x83, 0xec, 0x28,
+        0xb9, 0x14, 0x00, 0x00, 0x00,
+        0xba, 0x16, 0x00, 0x00, 0x00,
+        0xe8, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0x83, 0xc4, 0x28,
+        0xc3
+    };
+    x86_buf_append_bytes(&emod_main.text_section, code_main, sizeof(code_main));
+    ny_buf_grow((void **)&emod_main.functions, &emod_main.function_capacity, 1, sizeof(X86_Function_Code));
+    emod_main.functions[emod_main.function_count++] = (X86_Function_Code){
+        .name = ny_str("main"),
+        .offset = 0,
+        .size = sizeof(code_main),
+    };
+    X86_Relocation reloc = {
+        .kind = X86_FIXUP_CALL_REL32,
+        .code_offset = 15,
+        .symbol_name = ny_str("fn_arch_add"),
+        .addend = 0,
+    };
+    x86_buf_append_reloc(&emod_main.text_section, reloc);
+
+    Ny_Object_Buffer obj_main;
+    ny_obj_buf_init(&obj_main);
+    Ny_Diagnostic_List diags_main;
+    ny_diagnostic_list_init(&diags_main);
+    TEST_ASSERT(ny_emit_coff_x86_64(&obj_main, &emod_main, &diags_main));
+    ny_diagnostic_list_destroy(&diags_main);
+    x86_encoded_mod_destroy(&emod_main);
+
+    /* Link using nylink.lib */
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "main.obj", obj_main.bytes, obj_main.count));
+    TEST_ASSERT(nylink_add_archive(ctx, "mymath.lib", ar_buf.bytes, ar_buf.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    TEST_ASSERT_EQ(nylink_get_object_count(ctx), 2);
+    TEST_ASSERT_STR_EQ(nylink_get_object_name(ctx, 0), "main.obj");
+    TEST_ASSERT_STR_EQ(nylink_get_object_name(ctx, 1), "mymath.lib(add.obj)");
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .base_address = 0x140000000ULL,
+        .entry_point = "main",
+    };
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+
+    const char *out_exe = "bin/test_nylink_ar_run.exe";
+    TEST_ASSERT(nylink_write_executable(ctx, out_exe, &cfg));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    int ret = system("bin\\test_nylink_ar_run.exe");
+    TEST_ASSERT_EQ(ret, 42);
+
+    remove(out_exe);
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj_main);
+    ny_obj_buf_destroy(&ar_buf);
+    ny_obj_buf_destroy(&obj_unused);
+    ny_obj_buf_destroy(&obj_sub);
+#endif
+}
+
+

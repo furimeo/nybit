@@ -41,10 +41,44 @@ typedef struct Nylink_Resolved_Sym {
     bool is_defined;
 } Nylink_Resolved_Sym;
 
+typedef struct Nylink_Archive_Member {
+    char *name;
+    size_t header_offset;
+    size_t data_offset;
+    size_t size;
+    bool is_extracted;
+} Nylink_Archive_Member;
+
+typedef struct Nylink_Archive_Symbol {
+    char *name;
+    size_t member_offset;
+} Nylink_Archive_Symbol;
+
+typedef struct Nylink_Archive {
+    char *name;
+    const uint8_t *data;
+    size_t size;
+
+    Nylink_Archive_Member *members;
+    size_t member_count;
+    size_t member_capacity;
+
+    Nylink_Archive_Symbol *symbols;
+    size_t symbol_count;
+    size_t symbol_capacity;
+
+    const char *long_names;
+    size_t long_names_size;
+} Nylink_Archive;
+
 struct Nylink_Context {
     Nylink_Object *objects;
     size_t object_count;
     size_t object_capacity;
+
+    Nylink_Archive *archives;
+    size_t archive_count;
+    size_t archive_capacity;
 
     Nylink_Section *sections;
     size_t section_count;
@@ -80,6 +114,9 @@ void nylink_diag_add(Nylink_Context *ctx, const char *msg, const char *obj_name,
 
 bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx);
 bool nylink_read_coff(Nylink_Context *ctx, uint32_t obj_idx);
+
+bool nylink_read_archive(Nylink_Context *ctx, uint32_t arch_idx);
+bool nylink_extract_needed_archive_members(Nylink_Context *ctx);
 
 bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg);
 bool nylink_apply_relocations_internal(Nylink_Context *ctx);
