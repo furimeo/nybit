@@ -149,6 +149,13 @@ void test_nylink_archive_chained_dependencies(void);
 void test_nylink_archive_cyclic_dependencies(void);
 void test_nylink_archive_malformed_and_bounds(void);
 void test_nylink_archive_e2e_execution(void);
+void test_cli_link_basic_objects(void);
+void test_cli_link_with_archive_lazy_extraction(void);
+void test_cli_link_search_path_and_library(void);
+void test_cli_link_options_entry_base_target(void);
+void test_cli_link_error_handling_and_cleanup(void);
+void test_cli_link_determinism(void);
+void test_cli_link_e2e_execution(void);
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -297,6 +304,13 @@ int main(void) {
     RUN_TEST(test_nylink_archive_cyclic_dependencies);
     RUN_TEST(test_nylink_archive_malformed_and_bounds);
     RUN_TEST(test_nylink_archive_e2e_execution);
+    RUN_TEST(test_cli_link_basic_objects);
+    RUN_TEST(test_cli_link_with_archive_lazy_extraction);
+    RUN_TEST(test_cli_link_search_path_and_library);
+    RUN_TEST(test_cli_link_options_entry_base_target);
+    RUN_TEST(test_cli_link_error_handling_and_cleanup);
+    RUN_TEST(test_cli_link_determinism);
+    RUN_TEST(test_cli_link_e2e_execution);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

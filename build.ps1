@@ -79,7 +79,7 @@ foreach ($src in $nylinkSources) {
 & $Ar rcs bin/nylink.lib $nylinkObjs
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-& $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude src/main.c bin/nygen.lib -o bin/nybit.exe
+& $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude src/main.c bin/nylink.lib bin/nygen.lib -o bin/nybit.exe
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 & $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -Itests $testSources bin/nylink.lib bin/nyjit.lib bin/nygen.lib -o bin/test_runner.exe

@@ -4,7 +4,386 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <errno.h>
 #include <nygen/nygen.h>
+#include <nylink/nylink.h>
+#include <nybit/support.h>
+
+static uint8_t *read_checked_file(const char *path, size_t *out_size, char *err_buf, size_t err_buf_size) {
+    if (!path || !out_size) return nullptr;
+    *out_size = 0;
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "failed to open '%s': %s", path, strerror(errno));
+        }
+        return nullptr;
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "failed to seek '%s'", path);
+        }
+        fclose(f);
+        return nullptr;
+    }
+
+    long sz = ftell(f);
+    if (sz < 0) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "failed to determine size of '%s'", path);
+        }
+        fclose(f);
+        return nullptr;
+    }
+
+    if (sz == 0) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "file '%s' is empty (0 bytes)", path);
+        }
+        fclose(f);
+        return nullptr;
+    }
+
+    const size_t MAX_LINK_FILE_SIZE = 512 * 1024 * 1024; /* 512 MB */
+    if ((size_t)sz > MAX_LINK_FILE_SIZE) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "file '%s' exceeds maximum supported size (512MB)", path);
+        }
+        fclose(f);
+        return nullptr;
+    }
+
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "failed to seek '%s'", path);
+        }
+        fclose(f);
+        return nullptr;
+    }
+
+    uint8_t *buf = (uint8_t *)ny_alloc((size_t)sz);
+    if (!buf) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "out of memory allocating %ld bytes for '%s'", sz, path);
+        }
+        fclose(f);
+        return nullptr;
+    }
+
+    size_t read_bytes = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+
+    if (read_bytes != (size_t)sz) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "read error on '%s': expected %ld bytes, got %zu", path, sz, read_bytes);
+        }
+        ny_free(buf, (size_t)sz);
+        return nullptr;
+    }
+
+    *out_size = (size_t)sz;
+    return buf;
+}
+
+static bool parse_uint64_safe(const char *str, uint64_t *out_val) {
+    if (!str || str[0] == '\0') return false;
+    char *endptr = nullptr;
+    errno = 0;
+    int base = 10;
+    if (str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) {
+        base = 16;
+    }
+    unsigned long long val = strtoull(str, &endptr, base);
+    if (errno != 0 || endptr == str || *endptr != '\0') {
+        return false;
+    }
+    *out_val = (uint64_t)val;
+    return true;
+}
+
+static bool file_exists(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        fclose(f);
+        return true;
+    }
+    return false;
+}
+
+static int do_cli_link(int argc, char **argv) {
+    const char *output_file = nullptr;
+    const char *target_str = nullptr;
+    const char *entry_point = nullptr;
+    const char *base_str = nullptr;
+
+    const char **search_dirs = nullptr;
+    size_t search_dir_count = 0;
+    size_t search_dir_capacity = 0;
+
+    typedef struct Link_Input {
+        char *path;
+        bool is_lib_name;
+    } Link_Input;
+
+    Link_Input *inputs = nullptr;
+    size_t input_count = 0;
+    size_t input_capacity = 0;
+
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (strcmp(arg, "-o") == 0 && i + 1 < argc) {
+            output_file = argv[++i];
+        } else if (strncmp(arg, "-o", 2) == 0 && arg[2] != '\0') {
+            output_file = arg + 2;
+        } else if (strncmp(arg, "--target=", 9) == 0) {
+            target_str = arg + 9;
+        } else if (strcmp(arg, "--target") == 0 && i + 1 < argc) {
+            target_str = argv[++i];
+        } else if (strcmp(arg, "-target") == 0 && i + 1 < argc) {
+            target_str = argv[++i];
+        } else if (strncmp(arg, "--entry=", 8) == 0) {
+            entry_point = arg + 8;
+        } else if (strcmp(arg, "--entry") == 0 && i + 1 < argc) {
+            entry_point = argv[++i];
+        } else if (strncmp(arg, "--base=", 7) == 0) {
+            base_str = arg + 7;
+        } else if (strcmp(arg, "--base") == 0 && i + 1 < argc) {
+            base_str = argv[++i];
+        } else if (strncmp(arg, "-L", 2) == 0) {
+            const char *dir = arg + 2;
+            if (dir[0] == '\0' && i + 1 < argc) {
+                dir = argv[++i];
+            }
+            if (dir[0] != '\0') {
+                ny_buf_grow((void **)&search_dirs, &search_dir_capacity, search_dir_count, sizeof(const char *));
+                search_dirs[search_dir_count++] = dir;
+            }
+        } else if (strncmp(arg, "-l", 2) == 0) {
+            const char *lib = arg + 2;
+            if (lib[0] == '\0' && i + 1 < argc) {
+                lib = argv[++i];
+            }
+            if (lib[0] != '\0') {
+                ny_buf_grow((void **)&inputs, &input_capacity, input_count, sizeof(Link_Input));
+                Link_Input *inp = &inputs[input_count++];
+                size_t llen = strlen(lib);
+                inp->path = (char *)ny_alloc(llen + 1);
+                memcpy(inp->path, lib, llen + 1);
+                inp->is_lib_name = true;
+            }
+        } else if (arg[0] == '-') {
+            fprintf(stderr, "error: unrecognized link option '%s'\n", arg);
+            for (size_t k = 0; k < input_count; k++) {
+                ny_free(inputs[k].path, strlen(inputs[k].path) + 1);
+            }
+            if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
+            if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
+            return 1;
+        } else {
+            ny_buf_grow((void **)&inputs, &input_capacity, input_count, sizeof(Link_Input));
+            Link_Input *inp = &inputs[input_count++];
+            size_t plen = strlen(arg);
+            inp->path = (char *)ny_alloc(plen + 1);
+            memcpy(inp->path, arg, plen + 1);
+            inp->is_lib_name = false;
+        }
+    }
+
+    if (input_count == 0) {
+        fprintf(stderr, "error: no input files specified for link\n");
+        if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
+        if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
+        return 1;
+    }
+
+    Nylink_Target_Format target_format;
+#if defined(_WIN32) || defined(_WIN64)
+    target_format = NYLINK_TARGET_PE;
+#else
+    target_format = NYLINK_TARGET_ELF64;
+#endif
+
+    if (target_str) {
+        if (strcmp(target_str, "elf64") == 0 || strcmp(target_str, "elf64-x86-64") == 0 || strcmp(target_str, "x86_64-elf") == 0) {
+            target_format = NYLINK_TARGET_ELF64;
+        } else if (strcmp(target_str, "pe") == 0 || strcmp(target_str, "pe-x86-64") == 0 || strcmp(target_str, "pe32+") == 0 || strcmp(target_str, "x86_64-pe") == 0) {
+            target_format = NYLINK_TARGET_PE;
+        } else {
+            fprintf(stderr, "error: unsupported target format '%s' (supported: elf64, pe-x86-64)\n", target_str);
+            for (size_t k = 0; k < input_count; k++) {
+                ny_free(inputs[k].path, strlen(inputs[k].path) + 1);
+            }
+            if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
+            if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
+            return 1;
+        }
+    }
+
+    if (!output_file) {
+        output_file = (target_format == NYLINK_TARGET_PE) ? "a.exe" : "a.out";
+    }
+
+    uint64_t base_address = (target_format == NYLINK_TARGET_PE) ? 0x140000000ULL : 0x400000ULL;
+    if (base_str) {
+        if (!parse_uint64_safe(base_str, &base_address)) {
+            fprintf(stderr, "error: invalid base address '%s'\n", base_str);
+            for (size_t k = 0; k < input_count; k++) {
+                ny_free(inputs[k].path, strlen(inputs[k].path) + 1);
+            }
+            if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
+            if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
+            return 1;
+        }
+    }
+
+    typedef struct Loaded_Buffer {
+        uint8_t *data;
+        size_t size;
+    } Loaded_Buffer;
+
+    Loaded_Buffer *loaded = (Loaded_Buffer *)ny_alloc_zero(input_count * sizeof(Loaded_Buffer));
+    Nylink_Context *ctx = nylink_context_create();
+    bool load_ok = true;
+
+    for (size_t i = 0; i < input_count; i++) {
+        char resolved_path[1024];
+        resolved_path[0] = '\0';
+
+        if (inputs[i].is_lib_name) {
+            const char *lib_name = inputs[i].path;
+            bool found = false;
+
+            for (size_t d = 0; d < search_dir_count; d++) {
+                const char *dir = search_dirs[d];
+                if (target_format == NYLINK_TARGET_ELF64) {
+                    snprintf(resolved_path, sizeof(resolved_path), "%s/lib%s.a", dir, lib_name);
+                    if (file_exists(resolved_path)) { found = true; break; }
+                } else {
+                    snprintf(resolved_path, sizeof(resolved_path), "%s/%s.lib", dir, lib_name);
+                    if (file_exists(resolved_path)) { found = true; break; }
+                    snprintf(resolved_path, sizeof(resolved_path), "%s/lib%s.a", dir, lib_name);
+                    if (file_exists(resolved_path)) { found = true; break; }
+                }
+                snprintf(resolved_path, sizeof(resolved_path), "%s/%s", dir, lib_name);
+                if (file_exists(resolved_path)) { found = true; break; }
+            }
+
+            if (!found) {
+                fprintf(stderr, "error: library not found for -l%s\n", lib_name);
+                load_ok = false;
+                break;
+            }
+        } else {
+            snprintf(resolved_path, sizeof(resolved_path), "%s", inputs[i].path);
+        }
+
+        char err_msg[256];
+        err_msg[0] = '\0';
+        size_t fsize = 0;
+        uint8_t *fdata = read_checked_file(resolved_path, &fsize, err_msg, sizeof(err_msg));
+        if (!fdata) {
+            fprintf(stderr, "error: %s\n", err_msg[0] ? err_msg : "failed to read input file");
+            load_ok = false;
+            break;
+        }
+
+        loaded[i].data = fdata;
+        loaded[i].size = fsize;
+
+        if (fsize >= 8 && memcmp(fdata, "!<arch>\n", 8) == 0) {
+            if (!nylink_add_archive(ctx, resolved_path, fdata, fsize)) {
+                load_ok = false;
+                break;
+            }
+        } else {
+            if (!nylink_add_object(ctx, resolved_path, fdata, fsize)) {
+                load_ok = false;
+                break;
+            }
+        }
+    }
+
+    int exit_code = 0;
+    if (!load_ok || nylink_has_errors(ctx)) {
+        exit_code = 1;
+    } else {
+        if (!nylink_resolve_symbols(ctx)) {
+            exit_code = 1;
+        } else {
+            const char *eff_entry = entry_point;
+            if (!eff_entry) {
+                if (target_format == NYLINK_TARGET_ELF64) {
+                    if (nylink_find_symbol(ctx, "_start")) {
+                        eff_entry = "_start";
+                    } else {
+                        eff_entry = "main";
+                    }
+                } else {
+                    eff_entry = "main";
+                }
+            }
+
+            Nylink_Config cfg = {
+                .target_format = target_format,
+                .base_address = base_address,
+                .entry_point = eff_entry,
+            };
+
+            if (!nylink_layout(ctx, &cfg)) {
+                exit_code = 1;
+            } else if (!nylink_apply_relocations(ctx)) {
+                exit_code = 1;
+            } else {
+                char tmp_out[1040];
+                snprintf(tmp_out, sizeof(tmp_out), "%s.tmp.%d", output_file, rand());
+
+                if (!nylink_write_executable(ctx, tmp_out, &cfg)) {
+                    remove(tmp_out);
+                    exit_code = 1;
+                } else {
+                    remove(output_file);
+                    if (rename(tmp_out, output_file) != 0) {
+                        fprintf(stderr, "error: failed to create final output '%s': %s\n", output_file, strerror(errno));
+                        remove(tmp_out);
+                        exit_code = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if (exit_code != 0) {
+        size_t dcount = nylink_get_diagnostic_count(ctx);
+        for (size_t d = 0; d < dcount; d++) {
+            const Nylink_Diagnostic *diag = nylink_get_diagnostic(ctx, d);
+            if (!diag) continue;
+
+            if (diag->object_name && diag->symbol_or_section) {
+                fprintf(stderr, "%s: [%s]: %s\n", diag->object_name, diag->symbol_or_section, diag->message ? diag->message : "error");
+            } else if (diag->object_name) {
+                fprintf(stderr, "%s: %s\n", diag->object_name, diag->message ? diag->message : "error");
+            } else {
+                fprintf(stderr, "error: %s\n", diag->message ? diag->message : "linker error");
+            }
+        }
+    }
+
+    nylink_context_destroy(ctx);
+
+    for (size_t i = 0; i < input_count; i++) {
+        if (loaded[i].data) {
+            ny_free(loaded[i].data, loaded[i].size);
+        }
+        ny_free(inputs[i].path, strlen(inputs[i].path) + 1);
+    }
+    ny_free(loaded, input_count * sizeof(Loaded_Buffer));
+    if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
+    if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
+
+    return exit_code;
+}
 
 static const char DEFAULT_DEMO_SOURCE[] =
     "@function add(%a: i32, %b: i32) -> i32;\n"
@@ -89,6 +468,10 @@ static char *read_entire_file(const char *path, size_t *out_len) {
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+
+    if (argc >= 2 && strcmp(argv[1], "link") == 0) {
+        return do_cli_link(argc - 1, argv + 1);
+    }
 
     const char *input_file = nullptr;
     const char *output_file = nullptr;
