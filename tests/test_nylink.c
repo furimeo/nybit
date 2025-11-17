@@ -50,6 +50,20 @@ typedef struct Elf64_Test_Shdr {
     uint64_t sh_entsize;
 } Elf64_Test_Shdr;
 
+typedef struct Elf64_Test_Sym {
+    uint32_t st_name;
+    uint8_t st_info;
+    uint8_t st_other;
+    uint16_t st_shndx;
+    uint64_t st_value;
+    uint64_t st_size;
+} Elf64_Test_Sym;
+
+typedef struct Elf64_Test_Dyn {
+    int64_t d_tag;
+    uint64_t d_val;
+} Elf64_Test_Dyn;
+
 typedef struct Pe_Test_Dos_Header {
     uint16_t e_magic;
     uint16_t e_cblp;
@@ -1221,6 +1235,138 @@ void test_nylink_archive_e2e_execution(void) {
     ny_obj_buf_destroy(&obj_unused);
     ny_obj_buf_destroy(&obj_sub);
 #endif
+}
+
+void test_nylink_elf64_shared_emission(void) {
+    Ny_Object_Buffer obj1, obj2;
+    ny_obj_buf_init(&obj1);
+    ny_obj_buf_init(&obj2);
+
+    emit_dummy_elf(&obj1, "so_func_exported", true, "so_external_ref");
+    emit_dummy_elf(&obj2, "so_internal_helper", false, nullptr);
+
+    Nylink_Context *ctx = nylink_context_create();
+    nylink_context_set_shared(ctx, true);
+    TEST_ASSERT(nylink_add_object(ctx, "so1.o", obj1.bytes, obj1.count));
+    TEST_ASSERT(nylink_add_object(ctx, "so2.o", obj2.bytes, obj2.count));
+
+    /* In shared mode, undefined external references should not fail resolution */
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    const char *needed[] = { "libc.so.6", "libm.so.6" };
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .output_mode = NYLINK_OUTPUT_SHARED,
+        .base_address = 0x0ULL,
+        .soname = "libtest.so.1",
+        .needed_libs = needed,
+        .needed_lib_count = 2,
+    };
+
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+
+    const char *out_so = "bin/test_output.so";
+    TEST_ASSERT(nylink_write_executable(ctx, out_so, &cfg));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    /* Validate emitted shared library file */
+    FILE *f = fopen(out_so, "rb");
+    TEST_ASSERT(f != nullptr);
+
+    Elf64_Test_Ehdr ehdr;
+    TEST_ASSERT_EQ(fread(&ehdr, sizeof(ehdr), 1, f), 1);
+    TEST_ASSERT_EQ(ehdr.e_ident[0], 0x7F);
+    TEST_ASSERT_EQ(ehdr.e_ident[1], 'E');
+    TEST_ASSERT_EQ(ehdr.e_ident[2], 'L');
+    TEST_ASSERT_EQ(ehdr.e_ident[3], 'F');
+    TEST_ASSERT_EQ(ehdr.e_type, 3); /* ET_DYN */
+    TEST_ASSERT_EQ(ehdr.e_machine, 62); /* EM_X86_64 */
+
+    Elf64_Test_Phdr phdrs[8];
+    fseek(f, (long)ehdr.e_phoff, SEEK_SET);
+    TEST_ASSERT_EQ(fread(phdrs, sizeof(Elf64_Test_Phdr), ehdr.e_phnum, f), ehdr.e_phnum);
+
+    bool has_pt_dynamic = false;
+    bool has_pt_relro = false;
+    bool has_pt_stack = false;
+    for (uint16_t p = 0; p < ehdr.e_phnum; p++) {
+        if (phdrs[p].p_type == 2) has_pt_dynamic = true;
+        if (phdrs[p].p_type == 0x6474e552) has_pt_relro = true;
+        if (phdrs[p].p_type == 0x6474e551) has_pt_stack = true;
+    }
+    TEST_ASSERT(has_pt_dynamic);
+    TEST_ASSERT(has_pt_relro);
+    TEST_ASSERT(has_pt_stack);
+
+    /* Read section headers */
+    Elf64_Test_Shdr *shdrs = (Elf64_Test_Shdr *)ny_alloc_zero(ehdr.e_shnum * sizeof(Elf64_Test_Shdr));
+    fseek(f, (long)ehdr.e_shoff, SEEK_SET);
+    TEST_ASSERT_EQ(fread(shdrs, sizeof(Elf64_Test_Shdr), ehdr.e_shnum, f), ehdr.e_shnum);
+
+    /* Read shstrtab to check section names */
+    TEST_ASSERT(ehdr.e_shstrndx < ehdr.e_shnum);
+    char *shstrtab = (char *)ny_alloc_zero(shdrs[ehdr.e_shstrndx].sh_size);
+    fseek(f, (long)shdrs[ehdr.e_shstrndx].sh_offset, SEEK_SET);
+    TEST_ASSERT_EQ(fread(shstrtab, 1, shdrs[ehdr.e_shstrndx].sh_size, f), shdrs[ehdr.e_shstrndx].sh_size);
+
+    bool has_dynsym_sec = false;
+    bool has_dynstr_sec = false;
+    bool has_dynamic_sec = false;
+    bool has_got_sec = false;
+    uint16_t dynamic_sec_idx = 0;
+
+    for (uint16_t s = 1; s < ehdr.e_shnum; s++) {
+        const char *sname = shstrtab + shdrs[s].sh_name;
+        if (strcmp(sname, ".dynsym") == 0) has_dynsym_sec = true;
+        if (strcmp(sname, ".dynstr") == 0) has_dynstr_sec = true;
+        if (strcmp(sname, ".got") == 0) has_got_sec = true;
+        if (strcmp(sname, ".dynamic") == 0) {
+            has_dynamic_sec = true;
+            dynamic_sec_idx = s;
+        }
+    }
+    TEST_ASSERT(has_dynsym_sec);
+    TEST_ASSERT(has_dynstr_sec);
+    TEST_ASSERT(has_got_sec);
+    TEST_ASSERT(has_dynamic_sec);
+
+    /* Verify tags in .dynamic */
+    size_t dyn_entries_count = shdrs[dynamic_sec_idx].sh_size / sizeof(Elf64_Test_Dyn);
+    Elf64_Test_Dyn *dyn_entries = (Elf64_Test_Dyn *)ny_alloc_zero(shdrs[dynamic_sec_idx].sh_size);
+    fseek(f, (long)shdrs[dynamic_sec_idx].sh_offset, SEEK_SET);
+    TEST_ASSERT_EQ(fread(dyn_entries, sizeof(Elf64_Test_Dyn), dyn_entries_count, f), dyn_entries_count);
+
+    bool has_dt_soname = false;
+    size_t dt_needed_count = 0;
+    bool has_dt_strtab = false;
+    bool has_dt_symtab = false;
+    bool has_dt_null = false;
+
+    for (size_t d = 0; d < dyn_entries_count; d++) {
+        if (dyn_entries[d].d_tag == 14) has_dt_soname = true; /* DT_SONAME */
+        if (dyn_entries[d].d_tag == 1) dt_needed_count++;     /* DT_NEEDED */
+        if (dyn_entries[d].d_tag == 5) has_dt_strtab = true;  /* DT_STRTAB */
+        if (dyn_entries[d].d_tag == 6) has_dt_symtab = true;  /* DT_SYMTAB */
+        if (dyn_entries[d].d_tag == 0) has_dt_null = true;    /* DT_NULL */
+    }
+
+    TEST_ASSERT(has_dt_soname);
+    TEST_ASSERT_EQ(dt_needed_count, 2);
+    TEST_ASSERT(has_dt_strtab);
+    TEST_ASSERT(has_dt_symtab);
+    TEST_ASSERT(has_dt_null);
+
+    ny_free(dyn_entries, shdrs[dynamic_sec_idx].sh_size);
+    ny_free(shstrtab, shdrs[ehdr.e_shstrndx].sh_size);
+    ny_free(shdrs, ehdr.e_shnum * sizeof(Elf64_Test_Shdr));
+
+    fclose(f);
+    remove(out_so);
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj2);
+    ny_obj_buf_destroy(&obj1);
 }
 
 

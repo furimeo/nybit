@@ -128,7 +128,41 @@ void nylink_context_destroy(Nylink_Context *ctx) {
         ny_free(ctx->diagnostics, ctx->diagnostic_capacity * sizeof(Nylink_Diagnostic));
     }
 
+    if (ctx->soname) {
+        ny_free(ctx->soname, strlen(ctx->soname) + 1);
+    }
+    for (size_t i = 0; i < ctx->needed_lib_count; i++) {
+        if (ctx->needed_libs[i]) {
+            ny_free(ctx->needed_libs[i], strlen(ctx->needed_libs[i]) + 1);
+        }
+    }
+    if (ctx->needed_libs) {
+        ny_free(ctx->needed_libs, ctx->needed_lib_count * sizeof(char *));
+    }
+
+    if (ctx->dynsym_sym_ids) {
+        ny_free(ctx->dynsym_sym_ids, ctx->dynsym_capacity * sizeof(uint32_t));
+    }
+    if (ctx->dynstr_data) {
+        ny_free(ctx->dynstr_data, ctx->dynstr_capacity);
+    }
+    if (ctx->dynamic_data) {
+        ny_free(ctx->dynamic_data, ctx->dynamic_data_capacity);
+    }
+    if (ctx->rela_dyn_data) {
+        ny_free(ctx->rela_dyn_data, ctx->rela_dyn_data_capacity);
+    }
+    if (ctx->got_data) {
+        ny_free(ctx->got_data, ctx->got_data_capacity);
+    }
+
     ny_free(ctx, sizeof(Nylink_Context));
+}
+
+void nylink_context_set_shared(Nylink_Context *ctx, bool is_shared) {
+    if (ctx) {
+        ctx->is_shared = is_shared;
+    }
 }
 
 bool nylink_add_object(Nylink_Context *ctx, const char *name, const uint8_t *data, size_t size) {
@@ -269,6 +303,10 @@ bool nylink_resolve_symbols(Nylink_Context *ctx) {
 
     for (size_t r = 0; r < ref_count; r++) {
         if (!refs[r].is_defined) {
+            if (ctx->is_shared) {
+                /* In shared mode, undefined external references are resolved dynamically at runtime */
+                continue;
+            }
             const char *obj_name = refs[r].obj_index < ctx->object_count ? ctx->objects[refs[r].obj_index].name : "<unknown>";
             char msg[256];
             snprintf(msg, sizeof(msg), "undefined symbol: %s", refs[r].name);

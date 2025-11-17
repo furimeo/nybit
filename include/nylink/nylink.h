@@ -64,6 +64,7 @@ typedef struct Nylink_Symbol {
     uint64_t value;
     size_t size;
     uint32_t obj_index;
+    uint8_t visibility; /* 0 = default, 2 = hidden */
 } Nylink_Symbol;
 
 typedef struct Nylink_Relocation {
@@ -79,16 +80,26 @@ typedef enum Nylink_Target_Format {
     NYLINK_TARGET_PE,
 } Nylink_Target_Format;
 
+typedef enum Nylink_Output_Mode {
+    NYLINK_OUTPUT_EXECUTABLE = 0,
+    NYLINK_OUTPUT_SHARED,
+} Nylink_Output_Mode;
+
 typedef struct Nylink_Config {
     Nylink_Target_Format target_format;
+    Nylink_Output_Mode output_mode;
     uint64_t base_address;
     const char *entry_point;
+    const char *soname;
+    const char *const *needed_libs;
+    size_t needed_lib_count;
 } Nylink_Config;
 
 typedef struct Nylink_Context Nylink_Context;
 
 Nylink_Context *nylink_context_create(void);
 void nylink_context_destroy(Nylink_Context *ctx);
+void nylink_context_set_shared(Nylink_Context *ctx, bool is_shared);
 
 bool nylink_add_object(Nylink_Context *ctx, const char *name, const uint8_t *data, size_t size);
 bool nylink_add_archive(Nylink_Context *ctx, const char *name, const uint8_t *data, size_t size);

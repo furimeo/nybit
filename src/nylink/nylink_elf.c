@@ -290,6 +290,7 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
             nsym->value = esym->st_value;
             nsym->size = (size_t)esym->st_size;
             nsym->obj_index = obj_idx;
+            nsym->visibility = esym->st_other & 0x03;
         }
         obj->sym_count = syms_added;
     }

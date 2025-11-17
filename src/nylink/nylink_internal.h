@@ -107,6 +107,51 @@ struct Nylink_Context {
     uint64_t image_base;
     uint64_t total_file_size;
 
+    /* Dynamic linking support (ELF ET_DYN) */
+    bool is_shared;
+    char *soname;
+    char **needed_libs;
+    size_t needed_lib_count;
+
+    uint32_t *dynsym_sym_ids;     /* maps dynsym index (1..n) to ctx->symbols index */
+    size_t dynsym_count;          /* total dynsym entries including index 0 (NULL) */
+    size_t dynsym_capacity;
+
+    uint8_t *dynstr_data;
+    size_t dynstr_size;
+    size_t dynstr_capacity;
+
+    uint64_t dynsym_va;
+    uint64_t dynsym_file_offset;
+    size_t dynsym_file_size;
+
+    uint64_t dynstr_va;
+    uint64_t dynstr_file_offset;
+    size_t dynstr_file_size;
+
+    uint64_t dynamic_va;
+    uint64_t dynamic_file_offset;
+    size_t dynamic_file_size;
+
+    uint64_t rela_dyn_va;
+    uint64_t rela_dyn_file_offset;
+    size_t rela_dyn_file_size;
+
+    uint64_t got_va;
+    uint64_t got_file_offset;
+    size_t got_file_size;
+
+    uint8_t *dynamic_data;
+    size_t dynamic_data_capacity;
+
+    uint8_t *rela_dyn_data;
+    size_t rela_dyn_data_capacity;
+    size_t rela_dyn_count;
+
+    uint8_t *got_data;
+    size_t got_data_capacity;
+    size_t got_entry_count;
+
     bool has_error;
 };
 

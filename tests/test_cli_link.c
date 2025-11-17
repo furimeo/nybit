@@ -441,3 +441,38 @@ void test_cli_link_e2e_execution(void) {
     ny_obj_buf_destroy(&obj_sub);
 #endif
 }
+
+void test_cli_link_shared_options(void) {
+    Ny_Object_Buffer obj1;
+    ny_obj_buf_init(&obj1);
+    emit_cli_dummy_elf(&obj1, "so_func", false, nullptr);
+    write_file("bin/cli_so_input.o", obj1.bytes, obj1.count);
+
+    /* 1. Successful shared object emission via CLI */
+    int ret = system("bin\\nybit.exe link --target=elf64 --shared bin/cli_so_input.o --soname=libfoo.so.1 --needed=libc.so.6 -o bin/libcli_foo.so");
+    TEST_ASSERT_EQ(ret, 0);
+
+    FILE *f = fopen("bin/libcli_foo.so", "rb");
+    TEST_ASSERT(f != nullptr);
+
+    uint8_t ident[16];
+    TEST_ASSERT_EQ(fread(ident, 1, 16, f), 16);
+    TEST_ASSERT_EQ(ident[0], 0x7F);
+    TEST_ASSERT_EQ(ident[1], 'E');
+    TEST_ASSERT_EQ(ident[2], 'L');
+    TEST_ASSERT_EQ(ident[3], 'F');
+
+    uint16_t e_type = 0;
+    TEST_ASSERT_EQ(fread(&e_type, 2, 1, f), 1);
+    TEST_ASSERT_EQ(e_type, 3); /* ET_DYN */
+
+    fclose(f);
+    remove("bin/libcli_foo.so");
+
+    /* 2. Rejection of --shared on PE target */
+    int ret_pe = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/cli_so_input.o -o bin/foo.dll 2>NUL");
+    TEST_ASSERT(ret_pe != 0);
+
+    remove("bin/cli_so_input.o");
+    ny_obj_buf_destroy(&obj1);
+}

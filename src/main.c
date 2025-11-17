@@ -117,6 +117,11 @@ static int do_cli_link(int argc, char **argv) {
     const char *target_str = nullptr;
     const char *entry_point = nullptr;
     const char *base_str = nullptr;
+    bool is_shared = false;
+    const char *soname = nullptr;
+    const char **needed_libs = nullptr;
+    size_t needed_lib_count = 0;
+    size_t needed_lib_capacity = 0;
 
     const char **search_dirs = nullptr;
     size_t search_dir_count = 0;
@@ -137,6 +142,20 @@ static int do_cli_link(int argc, char **argv) {
             output_file = argv[++i];
         } else if (strncmp(arg, "-o", 2) == 0 && arg[2] != '\0') {
             output_file = arg + 2;
+        } else if (strcmp(arg, "--shared") == 0 || strcmp(arg, "-shared") == 0) {
+            is_shared = true;
+        } else if (strncmp(arg, "--soname=", 9) == 0) {
+            soname = arg + 9;
+        } else if (strcmp(arg, "--soname") == 0 && i + 1 < argc) {
+            soname = argv[++i];
+        } else if (strncmp(arg, "--needed=", 9) == 0) {
+            const char *lib = arg + 9;
+            ny_buf_grow((void **)&needed_libs, &needed_lib_capacity, needed_lib_count, sizeof(const char *));
+            needed_libs[needed_lib_count++] = lib;
+        } else if (strcmp(arg, "--needed") == 0 && i + 1 < argc) {
+            const char *lib = argv[++i];
+            ny_buf_grow((void **)&needed_libs, &needed_lib_capacity, needed_lib_count, sizeof(const char *));
+            needed_libs[needed_lib_count++] = lib;
         } else if (strncmp(arg, "--target=", 9) == 0) {
             target_str = arg + 9;
         } else if (strcmp(arg, "--target") == 0 && i + 1 < argc) {
@@ -180,6 +199,7 @@ static int do_cli_link(int argc, char **argv) {
             }
             if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
             if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
+            if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
             return 1;
         } else {
             ny_buf_grow((void **)&inputs, &input_capacity, input_count, sizeof(Link_Input));
@@ -195,6 +215,7 @@ static int do_cli_link(int argc, char **argv) {
         fprintf(stderr, "error: no input files specified for link\n");
         if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
         if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
+        if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
         return 1;
     }
 
@@ -217,15 +238,37 @@ static int do_cli_link(int argc, char **argv) {
             }
             if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
             if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
+            if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
             return 1;
         }
     }
 
-    if (!output_file) {
-        output_file = (target_format == NYLINK_TARGET_PE) ? "a.exe" : "a.out";
+    if (is_shared && target_format == NYLINK_TARGET_PE) {
+        fprintf(stderr, "error: --shared is not supported for PE target\n");
+        for (size_t k = 0; k < input_count; k++) {
+            ny_free(inputs[k].path, strlen(inputs[k].path) + 1);
+        }
+        if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
+        if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
+        if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
+        return 1;
     }
 
-    uint64_t base_address = (target_format == NYLINK_TARGET_PE) ? 0x140000000ULL : 0x400000ULL;
+    if (!output_file) {
+        if (is_shared) {
+            output_file = "liba.so";
+        } else {
+            output_file = (target_format == NYLINK_TARGET_PE) ? "a.exe" : "a.out";
+        }
+    }
+
+    uint64_t base_address = 0;
+    if (target_format == NYLINK_TARGET_PE) {
+        base_address = 0x140000000ULL;
+    } else {
+        base_address = is_shared ? 0x0ULL : 0x400000ULL;
+    }
+
     if (base_str) {
         if (!parse_uint64_safe(base_str, &base_address)) {
             fprintf(stderr, "error: invalid base address '%s'\n", base_str);
@@ -234,6 +277,7 @@ static int do_cli_link(int argc, char **argv) {
             }
             if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
             if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
+            if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
             return 1;
         }
     }
@@ -309,6 +353,7 @@ static int do_cli_link(int argc, char **argv) {
     if (!load_ok || nylink_has_errors(ctx)) {
         exit_code = 1;
     } else {
+        nylink_context_set_shared(ctx, is_shared);
         if (!nylink_resolve_symbols(ctx)) {
             exit_code = 1;
         } else {
@@ -327,8 +372,12 @@ static int do_cli_link(int argc, char **argv) {
 
             Nylink_Config cfg = {
                 .target_format = target_format,
+                .output_mode = is_shared ? NYLINK_OUTPUT_SHARED : NYLINK_OUTPUT_EXECUTABLE,
                 .base_address = base_address,
-                .entry_point = eff_entry,
+                .entry_point = is_shared ? entry_point : eff_entry,
+                .soname = soname,
+                .needed_libs = needed_libs,
+                .needed_lib_count = needed_lib_count,
             };
 
             if (!nylink_layout(ctx, &cfg)) {
@@ -381,6 +430,7 @@ static int do_cli_link(int argc, char **argv) {
     ny_free(loaded, input_count * sizeof(Loaded_Buffer));
     if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
     if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
+    if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
 
     return exit_code;
 }

@@ -156,6 +156,8 @@ void test_cli_link_options_entry_base_target(void);
 void test_cli_link_error_handling_and_cleanup(void);
 void test_cli_link_determinism(void);
 void test_cli_link_e2e_execution(void);
+void test_nylink_elf64_shared_emission(void);
+void test_cli_link_shared_options(void);
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -311,6 +313,8 @@ int main(void) {
     RUN_TEST(test_cli_link_error_handling_and_cleanup);
     RUN_TEST(test_cli_link_determinism);
     RUN_TEST(test_cli_link_e2e_execution);
+    RUN_TEST(test_nylink_elf64_shared_emission);
+    RUN_TEST(test_cli_link_shared_options);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);
