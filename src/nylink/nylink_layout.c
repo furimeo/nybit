@@ -14,15 +14,32 @@ static inline uint64_t align_up_checked(uint64_t val, uint64_t align, bool *over
     return (val + mask) & ~mask;
 }
 
+static uint32_t elf_sysv_hash(const char *name) {
+    uint32_t h = 0, g = 0;
+    while (*name) {
+        h = (h << 4) + (uint8_t)(*name++);
+        g = h & 0xf0000000;
+        if (g) h ^= (g >> 24);
+        h &= ~g;
+    }
+    return h;
+}
+
 bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
     if (!ctx) return false;
 
-    if (cfg && cfg->output_mode == NYLINK_OUTPUT_SHARED) {
+    if (cfg && (cfg->output_mode == NYLINK_OUTPUT_SHARED || cfg->output_mode == NYLINK_OUTPUT_PIE)) {
         ctx->is_shared = true;
+        ctx->output_mode = cfg->output_mode;
         if (cfg->soname && !ctx->soname) {
             size_t slen = strlen(cfg->soname);
             ctx->soname = (char *)ny_alloc(slen + 1);
             memcpy(ctx->soname, cfg->soname, slen + 1);
+        }
+        if (cfg->dynamic_linker && !ctx->dynamic_linker) {
+            size_t dlen = strlen(cfg->dynamic_linker);
+            ctx->dynamic_linker = (char *)ny_alloc(dlen + 1);
+            memcpy(ctx->dynamic_linker, cfg->dynamic_linker, dlen + 1);
         }
         if (cfg->needed_lib_count > 0 && !ctx->needed_libs) {
             ctx->needed_lib_count = cfg->needed_lib_count;
@@ -173,7 +190,17 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
             ctx->dynsym_count = 1; /* Index 0 is NULL symbol */
         }
 
-        /* Collect exported symbols and undefined references */
+        /* Handle .interp for PIE */
+        if (ctx->output_mode == NYLINK_OUTPUT_PIE) {
+            const char *interp_path = ctx->dynamic_linker ? ctx->dynamic_linker : "/lib64/ld-linux-x86-64.so.2";
+            ctx->interp_file_size = strlen(interp_path) + 1;
+            ctx->interp_va = base_va + current_rva;
+            ctx->interp_file_offset = current_file_off;
+            current_rva += align_up_checked(ctx->interp_file_size, 8, &overflow);
+            current_file_off += align_up_checked(ctx->interp_file_size, 8, &overflow);
+        }
+
+        /* Collect exported symbols and external references into dynsym */
         for (size_t s = 0; s < ctx->symbol_count; s++) {
             Nylink_Symbol *sym = &ctx->symbols[s];
             if (!sym->name || sym->name[0] == '\0') continue;
@@ -206,13 +233,36 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         ctx->dynsym_file_size = ctx->dynsym_count * 24; /* sizeof(Elf64_Sym) = 24 */
         ctx->dynstr_file_size = ctx->dynstr_size;
 
-        /* Count dynamic relocations:
-           For each relocation in sections:
-           - R_X86_64_64: 1 R_X86_64_RELATIVE in .rela.dyn
-           - PC32/PLT32 against undefined symbol: 1 GOT entry (8 bytes) + 1 R_X86_64_GLOB_DAT in .rela.dyn
+        /* Build SysV .hash table */
+        uint32_t nbucket = (ctx->dynsym_count > 1) ? (uint32_t)ctx->dynsym_count : 1;
+        uint32_t nchain = (uint32_t)ctx->dynsym_count;
+        ctx->hash_file_size = (2 + nbucket + nchain) * sizeof(uint32_t);
+        ctx->hash_data_capacity = ctx->hash_file_size;
+        ctx->hash_data = (uint8_t *)ny_alloc_zero(ctx->hash_data_capacity);
+
+        uint32_t *hash_words = (uint32_t *)ctx->hash_data;
+        hash_words[0] = nbucket;
+        hash_words[1] = nchain;
+        uint32_t *buckets = &hash_words[2];
+        uint32_t *chains = &hash_words[2 + nbucket];
+
+        for (uint32_t d = 1; d < (uint32_t)ctx->dynsym_count; d++) {
+            uint32_t s_id = ctx->dynsym_sym_ids[d];
+            const char *sym_name = ctx->symbols[s_id].name;
+            uint32_t h = elf_sysv_hash(sym_name);
+            uint32_t b = h % nbucket;
+            chains[d] = buckets[b];
+            buckets[b] = d;
+        }
+
+        /* Scan relocations to identify:
+           1. PLT calls (PLT32 / PC32 to function dynamic symbol)
+           2. GOT data imports (PLT32 / PC32 to non-function dynamic symbol)
+           3. Relative relocations (R_X86_64_64)
         */
         size_t dynamic_reloc_count = 0;
-        size_t got_entries = 0;
+        size_t plt_count = 0;
+        size_t got_data_count = 0;
 
         for (size_t r = 0; r < ctx->relocation_count; r++) {
             const Nylink_Relocation *reloc = &ctx->relocations[r];
@@ -224,25 +274,49 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
                 if (reloc->type == NYLINK_RELOC_X86_64_64) {
                     dynamic_reloc_count++;
                 } else if (reloc->type == NYLINK_RELOC_X86_64_PC32 || reloc->type == NYLINK_RELOC_X86_64_PLT32) {
-                    if (!is_def) {
-                        got_entries++;
-                        dynamic_reloc_count++;
+                    if (!is_def || (def && def->is_dynamic)) {
+                        bool is_func = (def ? def->is_function : sym->is_function);
+                        if (is_func || reloc->type == NYLINK_RELOC_X86_64_PLT32) {
+                            plt_count++;
+                        } else {
+                            got_data_count++;
+                            dynamic_reloc_count++;
+                        }
                     }
                 }
             }
         }
 
-        ctx->rela_dyn_count = dynamic_reloc_count;
-        ctx->rela_dyn_file_size = dynamic_reloc_count * 24; /* sizeof(Elf64_Rela) = 24 */
-        ctx->got_entry_count = got_entries;
-        ctx->got_file_size = got_entries * 8;
+        ctx->plt_entry_count = plt_count;
+        ctx->plt_file_size = (plt_count > 0) ? (16 + plt_count * 16) : 0; /* PLT0 + N * PLT[i] */
+        ctx->rela_plt_count = plt_count;
+        ctx->rela_plt_file_size = plt_count * 24; /* sizeof(Elf64_Rela) = 24 */
+        ctx->got_plt_file_size = (plt_count > 0) ? ((3 + plt_count) * 8) : 0; /* GOT_PLT[0..2] + N slots */
 
-        /* .dynamic size: DT_SONAME (optional), DT_NEEDED * N, DT_STRTAB, DT_STRSZ, DT_SYMTAB, DT_SYMENT, DT_RELA, DT_RELASZ, DT_RELAENT, DT_NULL */
-        size_t dynamic_entries = 7 + (ctx->soname ? 1 : 0) + ctx->needed_lib_count;
+        ctx->got_entry_count = got_data_count;
+        /* Always emit at least a minimal .got in shared/PIE mode */
+        ctx->got_file_size = (got_data_count == 0) ? 8 : got_data_count * 8;
+        ctx->rela_dyn_count = dynamic_reloc_count;
+        ctx->rela_dyn_file_size = dynamic_reloc_count * 24;
+
+        /* .dynamic size:
+           DT_HASH, DT_STRTAB, DT_STRSZ, DT_SYMTAB, DT_SYMENT
+           DT_SONAME (optional), DT_NEEDED * N
+           DT_RELA, DT_RELASZ, DT_RELAENT (if rela_dyn)
+           DT_PLTGOT, DT_PLTRELSZ, DT_PLTREL, DT_JMPREL (if rela_plt)
+           DT_NULL
+        */
+        size_t dynamic_entries = 6 + (ctx->soname ? 1 : 0) + ctx->needed_lib_count;
+        if (ctx->rela_dyn_file_size > 0) dynamic_entries += 3;
+        if (ctx->rela_plt_file_size > 0) dynamic_entries += 4;
         ctx->dynamic_file_size = dynamic_entries * 16; /* sizeof(Elf64_Dyn) = 16 */
 
-        /* Place .dynsym, .dynstr, .rela.dyn in header page or first page */
-        /* For clean layout, put them starting at current_file_off / current_rva */
+        /* Place .hash, .dynsym, .dynstr, .rela.dyn, .rela.plt in read-only segment before .text */
+        ctx->hash_va = base_va + current_rva;
+        ctx->hash_file_offset = current_file_off;
+        current_rva += align_up_checked(ctx->hash_file_size, 8, &overflow);
+        current_file_off += align_up_checked(ctx->hash_file_size, 8, &overflow);
+
         ctx->dynsym_va = base_va + current_rva;
         ctx->dynsym_file_offset = current_file_off;
         current_rva += align_up_checked(ctx->dynsym_file_size, 8, &overflow);
@@ -258,6 +332,23 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
             ctx->rela_dyn_file_offset = current_file_off;
             current_rva += align_up_checked(ctx->rela_dyn_file_size, 8, &overflow);
             current_file_off += align_up_checked(ctx->rela_dyn_file_size, 8, &overflow);
+        }
+
+        if (ctx->rela_plt_file_size > 0) {
+            ctx->rela_plt_va = base_va + current_rva;
+            ctx->rela_plt_file_offset = current_file_off;
+            current_rva += align_up_checked(ctx->rela_plt_file_size, 8, &overflow);
+            current_file_off += align_up_checked(ctx->rela_plt_file_size, 8, &overflow);
+        }
+
+        if (ctx->plt_file_size > 0) {
+            /* .plt is executable code, align to 16 bytes */
+            current_rva = align_up_checked(current_rva, 16, &overflow);
+            current_file_off = align_up_checked(current_file_off, 16, &overflow);
+            ctx->plt_va = base_va + current_rva;
+            ctx->plt_file_offset = current_file_off;
+            current_rva += align_up_checked(ctx->plt_file_size, 16, &overflow);
+            current_file_off += align_up_checked(ctx->plt_file_size, 16, &overflow);
         }
 
         /* Pad to page boundary before .text */
@@ -287,13 +378,19 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         current_rva += align_up_checked(out_sec->mem_size, page_size, &overflow);
     }
 
-    /* In shared mode, place .got and .dynamic in the data page/segment */
+    /* In shared/PIE mode, place .got, .got.plt and .dynamic in data segment */
     if (ctx->is_shared && (!cfg || cfg->target_format == NYLINK_TARGET_ELF64)) {
         if (ctx->got_file_size > 0) {
             ctx->got_va = base_va + current_rva;
             ctx->got_file_offset = current_file_off;
             current_rva += align_up_checked(ctx->got_file_size, 8, &overflow);
             current_file_off += align_up_checked(ctx->got_file_size, 8, &overflow);
+        }
+        if (ctx->got_plt_file_size > 0) {
+            ctx->got_plt_va = base_va + current_rva;
+            ctx->got_plt_file_offset = current_file_off;
+            current_rva += align_up_checked(ctx->got_plt_file_size, 8, &overflow);
+            current_file_off += align_up_checked(ctx->got_plt_file_size, 8, &overflow);
         }
         ctx->dynamic_va = base_va + current_rva;
         ctx->dynamic_file_offset = current_file_off;
@@ -346,8 +443,8 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         }
     }
 
-    /* Phase 4: Resolve entry point (optional in shared mode) */
-    if (ctx->is_shared) {
+    /* Phase 4: Resolve entry point */
+    if (ctx->output_mode == NYLINK_OUTPUT_SHARED) {
         ctx->entry_point_va = 0;
         if (cfg && cfg->entry_point) {
             const Nylink_Symbol *entry_sym = nylink_find_symbol(ctx, cfg->entry_point);
