@@ -1283,7 +1283,7 @@ void test_nylink_elf64_shared_emission(void) {
     TEST_ASSERT_EQ(ehdr.e_type, 3); /* ET_DYN */
     TEST_ASSERT_EQ(ehdr.e_machine, 62); /* EM_X86_64 */
 
-    Elf64_Test_Phdr phdrs[8];
+    Elf64_Test_Phdr phdrs[16];
     fseek(f, (long)ehdr.e_phoff, SEEK_SET);
     TEST_ASSERT_EQ(fread(phdrs, sizeof(Elf64_Test_Phdr), ehdr.e_phnum, f), ehdr.e_phnum);
 

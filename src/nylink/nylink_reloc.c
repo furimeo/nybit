@@ -4,6 +4,38 @@
 #include <stdio.h>
 #include <string.h>
 
+#define R_X86_64_64 1
+#define R_X86_64_GLOB_DAT 6
+#define R_X86_64_JUMP_SLOT 7
+#define R_X86_64_RELATIVE 8
+
+static void write_word64(uint8_t *ptr, uint64_t val) {
+    ptr[0] = (uint8_t)(val & 0xFF);
+    ptr[1] = (uint8_t)((val >> 8) & 0xFF);
+    ptr[2] = (uint8_t)((val >> 16) & 0xFF);
+    ptr[3] = (uint8_t)((val >> 24) & 0xFF);
+    ptr[4] = (uint8_t)((val >> 32) & 0xFF);
+    ptr[5] = (uint8_t)((val >> 40) & 0xFF);
+    ptr[6] = (uint8_t)((val >> 48) & 0xFF);
+    ptr[7] = (uint8_t)((val >> 56) & 0xFF);
+}
+
+static void write_disp32(uint8_t *ptr, uint32_t val) {
+    ptr[0] = (uint8_t)(val & 0xFF);
+    ptr[1] = (uint8_t)((val >> 8) & 0xFF);
+    ptr[2] = (uint8_t)((val >> 16) & 0xFF);
+    ptr[3] = (uint8_t)((val >> 24) & 0xFF);
+}
+
+static bool push_rela_dyn(uint8_t *rela_dyn_data, size_t capacity, size_t index, uint64_t r_offset, uint64_t r_info, int64_t r_addend) {
+    size_t off = index * 24;
+    if (off + 24 > capacity) return false;
+    memcpy(rela_dyn_data + off, &r_offset, 8);
+    memcpy(rela_dyn_data + off + 8, &r_info, 8);
+    memcpy(rela_dyn_data + off + 16, &r_addend, 8);
+    return true;
+}
+
 bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
     if (!ctx) return false;
     if (!ctx->is_laid_out) {
@@ -12,8 +44,111 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
     }
 
     bool success = true;
-    size_t dyn_reloc_idx = 0;
-    size_t got_slot_idx = 0;
+    size_t rela_dyn_idx = 0;
+
+    uint32_t *import_dynsym_idx = nullptr;
+    if (ctx->import_count > 0) {
+        import_dynsym_idx = (uint32_t *)ny_alloc_zero(ctx->import_count * sizeof(uint32_t));
+        for (size_t i = 0; i < ctx->import_count; i++) {
+            const char *name = ctx->symbols[ctx->import_sym_ids[i]].name;
+            for (size_t d = 1; d < ctx->dynsym_count; d++) {
+                if (strcmp(ctx->symbols[ctx->dynsym_sym_ids[d]].name, name) == 0) {
+                    import_dynsym_idx[i] = (uint32_t)d;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (ctx->uses_dynamic) {
+        if (ctx->rela_dyn_file_size > 0 && !ctx->rela_dyn_data) {
+            ctx->rela_dyn_data_capacity = ctx->rela_dyn_file_size;
+            ctx->rela_dyn_data = (uint8_t *)ny_alloc_zero(ctx->rela_dyn_data_capacity);
+        }
+        if (ctx->got_file_size > 0 && !ctx->got_data) {
+            ctx->got_data_capacity = ctx->got_file_size;
+            ctx->got_data = (uint8_t *)ny_alloc_zero(ctx->got_data_capacity);
+        }
+        if (ctx->rela_plt_file_size > 0 && !ctx->rela_plt_data) {
+            ctx->rela_plt_data_capacity = ctx->rela_plt_file_size;
+            ctx->rela_plt_data = (uint8_t *)ny_alloc_zero(ctx->rela_plt_data_capacity);
+        }
+        if (ctx->got_plt_file_size > 0 && !ctx->got_plt_data) {
+            ctx->got_plt_data_capacity = ctx->got_plt_file_size;
+            ctx->got_plt_data = (uint8_t *)ny_alloc_zero(ctx->got_plt_data_capacity);
+
+            uint64_t *got_plt_words = (uint64_t *)ctx->got_plt_data;
+            got_plt_words[0] = ctx->dynamic_va;
+            got_plt_words[1] = 0;
+            got_plt_words[2] = 0;
+        }
+        if (ctx->plt_file_size > 0 && !ctx->plt_data) {
+            ctx->plt_data_capacity = ctx->plt_file_size;
+            ctx->plt_data = (uint8_t *)ny_alloc_zero(ctx->plt_data_capacity);
+
+            uint8_t *p0 = ctx->plt_data;
+            int32_t disp1 = (int32_t)((int64_t)(ctx->got_plt_va + 8) - (int64_t)(ctx->plt_va + 6));
+            int32_t disp2 = (int32_t)((int64_t)(ctx->got_plt_va + 16) - (int64_t)(ctx->plt_va + 12));
+
+            p0[0] = 0xFF; p0[1] = 0x35;
+            memcpy(&p0[2], &disp1, 4);
+            p0[6] = 0xFF; p0[7] = 0x25;
+            memcpy(&p0[8], &disp2, 4);
+            p0[12] = 0x0F; p0[13] = 0x1F; p0[14] = 0x44; p0[15] = 0x00;
+        }
+
+        for (size_t i = 0; i < ctx->import_count; i++) {
+            uint32_t dyn_idx = import_dynsym_idx[i];
+
+            uint32_t plt_idx = ctx->import_plt_idx[i];
+            if (plt_idx != UINT32_MAX && ctx->plt_data && ctx->got_plt_data && ctx->rela_plt_data) {
+                uint64_t entry_va = ctx->plt_va + 16 + (uint64_t)plt_idx * 16;
+                uint64_t slot_va = ctx->got_plt_va + 24 + (uint64_t)plt_idx * 8;
+
+                ((uint64_t *)ctx->got_plt_data)[3 + plt_idx] = entry_va + 6;
+
+                uint8_t *pe = ctx->plt_data + 16 + (size_t)plt_idx * 16;
+                int32_t jmp_disp = (int32_t)((int64_t)slot_va - (int64_t)(entry_va + 6));
+                int32_t plt0_disp = (int32_t)((int64_t)ctx->plt_va - (int64_t)(entry_va + 16));
+
+                pe[0] = 0xFF; pe[1] = 0x25;
+                memcpy(&pe[2], &jmp_disp, 4);
+                pe[6] = 0x68;
+                uint32_t reloc_index = plt_idx;
+                memcpy(&pe[7], &reloc_index, 4);
+                pe[11] = 0xE9;
+                memcpy(&pe[12], &plt0_disp, 4);
+
+                size_t rela_off = (size_t)plt_idx * 24;
+                uint64_t r_offset = slot_va;
+                uint64_t r_info = ((uint64_t)dyn_idx << 32) | R_X86_64_JUMP_SLOT;
+                int64_t zero = 0;
+                if (rela_off + 24 > ctx->rela_plt_data_capacity) {
+                    nylink_diag_add(ctx, "internal error: .rela.plt index overflow", nullptr, nullptr);
+                    if (import_dynsym_idx) {
+                        ny_free(import_dynsym_idx, ctx->import_count * sizeof(uint32_t));
+                    }
+                    return false;
+                }
+                memcpy(ctx->rela_plt_data + rela_off, &r_offset, 8);
+                memcpy(ctx->rela_plt_data + rela_off + 8, &r_info, 8);
+                memcpy(ctx->rela_plt_data + rela_off + 16, &zero, 8);
+            }
+
+            uint32_t got_idx = ctx->import_got_idx[i];
+            if (got_idx != UINT32_MAX && ctx->rela_dyn_data) {
+                uint64_t slot_va = ctx->got_va + (uint64_t)got_idx * 8;
+                uint64_t r_info = ((uint64_t)dyn_idx << 32) | R_X86_64_GLOB_DAT;
+                if (!push_rela_dyn(ctx->rela_dyn_data, ctx->rela_dyn_data_capacity, rela_dyn_idx++, slot_va, r_info, 0)) {
+                    nylink_diag_add(ctx, "internal error: .rela.dyn index overflow", nullptr, nullptr);
+                    if (import_dynsym_idx) {
+                        ny_free(import_dynsym_idx, ctx->import_count * sizeof(uint32_t));
+                    }
+                    return false;
+                }
+            }
+        }
+    }
 
     for (size_t r = 0; r < ctx->relocation_count; r++) {
         const Nylink_Relocation *reloc = &ctx->relocations[r];
@@ -24,6 +159,10 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
             continue;
         }
 
+        if (reloc->type == NYLINK_RELOC_NONE) {
+            continue;
+        }
+
         const Nylink_Section *in_sec = &ctx->sections[reloc->sec_id];
         uint32_t out_idx = ctx->sec_layouts[reloc->sec_id].out_sec_idx;
         Nylink_Output_Section *out_sec = &ctx->out_sections[out_idx];
@@ -31,37 +170,18 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
         uint64_t target_sec_offset = ctx->sec_layouts[reloc->sec_id].offset_in_out_sec + reloc->offset;
         uint64_t place_va = ctx->sec_layouts[reloc->sec_id].va + reloc->offset;
 
-        uint64_t sym_va = 0;
-        const char *sym_name = "<unnamed>";
+        uint8_t plan = ctx->reloc_plans ? ctx->reloc_plans[r] : NYLINK_PLAN_STATIC;
+        uint32_t slot = ctx->reloc_plan_slots ? ctx->reloc_plan_slots[r] : UINT32_MAX;
 
-        bool is_sym_def = false;
-        if (reloc->sym_id < ctx->symbol_count) {
-            const Nylink_Symbol *sym = &ctx->symbols[reloc->sym_id];
-            if (sym->name) sym_name = sym->name;
-
-            if (ctx->resolved_symbols && ctx->resolved_symbols[sym->id].is_defined) {
-                sym_va = ctx->resolved_symbols[sym->id].final_va;
-                is_sym_def = true;
-            } else if (ctx->is_shared) {
-                /* In shared mode, unresolved symbols will be resolved dynamically via GOT */
-                is_sym_def = false;
-                sym_va = 0;
-            } else {
-                char msg[256];
-                snprintf(msg, sizeof(msg), "relocation against unresolved symbol: %s", sym_name);
-                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
-                success = false;
-                continue;
-            }
-        } else {
+        if (reloc->sym_id >= ctx->symbol_count) {
             nylink_diag_add(ctx, "invalid relocation: symbol index out of bounds", in_sec->name, nullptr);
             success = false;
             continue;
         }
 
-        if (reloc->type == NYLINK_RELOC_NONE) {
-            continue;
-        }
+        const Nylink_Symbol *sym = &ctx->symbols[reloc->sym_id];
+        const Nylink_Resolved_Sym *state = &ctx->resolved_symbols[reloc->sym_id];
+        const char *sym_name = sym->name ? sym->name : "<unnamed>";
 
         if (reloc->type == NYLINK_RELOC_X86_64_64) {
             if (target_sec_offset + 8 > out_sec->data_capacity || target_sec_offset + 8 > out_sec->file_size) {
@@ -70,36 +190,30 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
                 continue;
             }
 
-            uint64_t val = sym_va + reloc->addend;
-            uint8_t *ptr = out_sec->data + target_sec_offset;
-            ptr[0] = (uint8_t)(val & 0xFF);
-            ptr[1] = (uint8_t)((val >> 8) & 0xFF);
-            ptr[2] = (uint8_t)((val >> 16) & 0xFF);
-            ptr[3] = (uint8_t)((val >> 24) & 0xFF);
-            ptr[4] = (uint8_t)((val >> 32) & 0xFF);
-            ptr[5] = (uint8_t)((val >> 40) & 0xFF);
-            ptr[6] = (uint8_t)((val >> 48) & 0xFF);
-            ptr[7] = (uint8_t)((val >> 56) & 0xFF);
-
-            /* In shared mode, record R_X86_64_RELATIVE dynamic relocation */
-            if (ctx->is_shared) {
-                if (!ctx->rela_dyn_data) {
-                    ctx->rela_dyn_data_capacity = ctx->rela_dyn_count * 24;
-                    if (ctx->rela_dyn_data_capacity == 0) ctx->rela_dyn_data_capacity = 24;
-                    ctx->rela_dyn_data = (uint8_t *)ny_alloc_zero(ctx->rela_dyn_data_capacity);
+            uint64_t val = 0;
+            if (plan == NYLINK_PLAN_DYN_ABS64) {
+                val = (uint64_t)reloc->addend;
+                uint64_t r_info = ((uint64_t)import_dynsym_idx[slot] << 32) | R_X86_64_64;
+                if (!push_rela_dyn(ctx->rela_dyn_data, ctx->rela_dyn_data_capacity, rela_dyn_idx++, place_va, r_info, reloc->addend)) {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "dynamic relocation overflow: symbol '%s'", sym_name);
+                    nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                    success = false;
+                    continue;
                 }
-                /* Elf64_Rela: r_offset (place_va), r_info (ELF64_R_INFO(0, R_X86_64_RELATIVE=8)), r_addend (val) */
-                size_t off = dyn_reloc_idx * 24;
-                if (off + 24 <= ctx->rela_dyn_data_capacity) {
-                    uint64_t r_offset = place_va;
-                    uint64_t r_info = 8ULL; /* R_X86_64_RELATIVE = 8, sym = 0 */
-                    int64_t r_addend = (int64_t)val;
-                    memcpy(ctx->rela_dyn_data + off, &r_offset, 8);
-                    memcpy(ctx->rela_dyn_data + off + 8, &r_info, 8);
-                    memcpy(ctx->rela_dyn_data + off + 16, &r_addend, 8);
-                    dyn_reloc_idx++;
+            } else {
+                val = state->final_va + (uint64_t)reloc->addend;
+                if (plan == NYLINK_PLAN_RELATIVE) {
+                    if (!push_rela_dyn(ctx->rela_dyn_data, ctx->rela_dyn_data_capacity, rela_dyn_idx++, place_va, R_X86_64_RELATIVE, (int64_t)val)) {
+                        char msg[256];
+                        snprintf(msg, sizeof(msg), "dynamic relocation overflow: symbol '%s'", sym_name);
+                        nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                        success = false;
+                        continue;
+                    }
                 }
             }
+            write_word64(out_sec->data + target_sec_offset, val);
         } else if (reloc->type == NYLINK_RELOC_X86_64_PC32 || reloc->type == NYLINK_RELOC_X86_64_PLT32) {
             if (target_sec_offset + 4 > out_sec->data_capacity || target_sec_offset + 4 > out_sec->file_size) {
                 nylink_diag_add(ctx, "relocation write out of bounds", in_sec->name, sym_name);
@@ -107,49 +221,24 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
                 continue;
             }
 
-            uint64_t target_va = sym_va;
-            if (ctx->is_shared && !is_sym_def) {
-                /* Target is undefined external symbol: route through GOT */
-                if (!ctx->got_data) {
-                    ctx->got_data_capacity = ctx->got_entry_count * 8;
-                    if (ctx->got_data_capacity == 0) ctx->got_data_capacity = 8;
-                    ctx->got_data = (uint8_t *)ny_alloc_zero(ctx->got_data_capacity);
-                }
-
-                uint64_t got_slot_va = ctx->got_va + got_slot_idx * 8;
-                target_va = got_slot_va;
-
-                /* Emit dynamic relocation R_X86_64_GLOB_DAT (type 6) for this GOT entry */
-                if (!ctx->rela_dyn_data) {
-                    ctx->rela_dyn_data_capacity = ctx->rela_dyn_count * 24;
-                    if (ctx->rela_dyn_data_capacity == 0) ctx->rela_dyn_data_capacity = 24;
-                    ctx->rela_dyn_data = (uint8_t *)ny_alloc_zero(ctx->rela_dyn_data_capacity);
-                }
-
-                /* Find dynsym index */
-                uint32_t dyn_sym_idx = 0;
-                for (size_t d = 1; d < ctx->dynsym_count; d++) {
-                    uint32_t s_id = ctx->dynsym_sym_ids[d];
-                    if (strcmp(ctx->symbols[s_id].name, sym_name) == 0) {
-                        dyn_sym_idx = (uint32_t)d;
-                        break;
-                    }
-                }
-
-                size_t off = dyn_reloc_idx * 24;
-                if (off + 24 <= ctx->rela_dyn_data_capacity) {
-                    uint64_t r_offset = got_slot_va;
-                    uint64_t r_info = ((uint64_t)dyn_sym_idx << 32) | 6ULL; /* R_X86_64_GLOB_DAT = 6 */
-                    int64_t r_addend = 0;
-                    memcpy(ctx->rela_dyn_data + off, &r_offset, 8);
-                    memcpy(ctx->rela_dyn_data + off + 8, &r_info, 8);
-                    memcpy(ctx->rela_dyn_data + off + 16, &r_addend, 8);
-                    dyn_reloc_idx++;
-                }
-                got_slot_idx++;
+            uint64_t target_va;
+            if (plan == NYLINK_PLAN_PLT_CALL) {
+                target_va = ctx->plt_va + 16 + (uint64_t)slot * 16;
+            } else if (plan == NYLINK_PLAN_GOT_LOAD) {
+                target_va = ctx->got_va + (uint64_t)slot * 8;
+            } else if (state->is_defined && !state->is_dynamic) {
+                target_va = state->final_va;
+            } else if (!state->is_defined && sym->binding == NYLINK_SYM_WEAK) {
+                target_va = 0;
+            } else {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "relocation against unresolved symbol: %s", sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
             }
 
-            int64_t val = (int64_t)(target_va + reloc->addend) - (int64_t)place_va;
+            int64_t val = (int64_t)(target_va + (uint64_t)reloc->addend) - (int64_t)place_va;
             if (val < (int64_t)INT32_MIN || val > (int64_t)INT32_MAX) {
                 char msg[256];
                 snprintf(msg, sizeof(msg), "relocation overflow: PC32 value %lld out of 32-bit range for symbol '%s'", (long long)val, sym_name);
@@ -158,18 +247,17 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
                 continue;
             }
 
-            uint32_t val32 = (uint32_t)(int32_t)val;
-            uint8_t *ptr = out_sec->data + target_sec_offset;
-            ptr[0] = (uint8_t)(val32 & 0xFF);
-            ptr[1] = (uint8_t)((val32 >> 8) & 0xFF);
-            ptr[2] = (uint8_t)((val32 >> 16) & 0xFF);
-            ptr[3] = (uint8_t)((val32 >> 24) & 0xFF);
+            write_disp32(out_sec->data + target_sec_offset, (uint32_t)(int32_t)val);
         } else {
             char msg[256];
             snprintf(msg, sizeof(msg), "unsupported relocation type: %d", (int)reloc->type);
             nylink_diag_add(ctx, msg, in_sec->name, sym_name);
             success = false;
         }
+    }
+
+    if (import_dynsym_idx) {
+        ny_free(import_dynsym_idx, ctx->import_count * sizeof(uint32_t));
     }
 
     if (success) {

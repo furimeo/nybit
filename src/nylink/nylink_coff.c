@@ -167,6 +167,7 @@ bool nylink_read_coff(Nylink_Context *ctx, uint32_t obj_idx) {
         coff_to_nylink_sec[sec_num] = sec_id;
 
         Nylink_Section *nsec = &ctx->sections[sec_id];
+        memset(nsec, 0, sizeof(Nylink_Section));
         nsec->id = sec_id;
         nsec->obj_index = obj_idx;
         nsec->kind = kind;
@@ -228,6 +229,7 @@ bool nylink_read_coff(Nylink_Context *ctx, uint32_t obj_idx) {
                 coff_to_nylink_sym[i] = sym_id;
 
                 Nylink_Symbol *nsym = &ctx->symbols[sym_id];
+                memset(nsym, 0, sizeof(Nylink_Symbol));
                 nsym->id = sym_id;
                 size_t nlen = strlen(sname_buf);
                 nsym->name = (char *)ny_alloc(nlen + 1);

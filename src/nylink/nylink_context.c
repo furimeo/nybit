@@ -137,7 +137,23 @@ void nylink_context_destroy(Nylink_Context *ctx) {
         }
     }
     if (ctx->needed_libs) {
-        ny_free(ctx->needed_libs, ctx->needed_lib_count * sizeof(char *));
+        ny_free(ctx->needed_libs, ctx->needed_lib_capacity * sizeof(char *));
+    }
+
+    if (ctx->reloc_plans) {
+        ny_free(ctx->reloc_plans, ctx->relocation_count);
+    }
+    if (ctx->reloc_plan_slots) {
+        ny_free(ctx->reloc_plan_slots, ctx->relocation_count * sizeof(uint32_t));
+    }
+    if (ctx->import_sym_ids) {
+        ny_free(ctx->import_sym_ids, ctx->import_capacity * sizeof(uint32_t));
+    }
+    if (ctx->import_plt_idx) {
+        ny_free(ctx->import_plt_idx, ctx->import_capacity * sizeof(uint32_t));
+    }
+    if (ctx->import_got_idx) {
+        ny_free(ctx->import_got_idx, ctx->import_capacity * sizeof(uint32_t));
     }
 
     if (ctx->dynsym_sym_ids) {
@@ -155,6 +171,21 @@ void nylink_context_destroy(Nylink_Context *ctx) {
     if (ctx->got_data) {
         ny_free(ctx->got_data, ctx->got_data_capacity);
     }
+    if (ctx->plt_data) {
+        ny_free(ctx->plt_data, ctx->plt_data_capacity);
+    }
+    if (ctx->got_plt_data) {
+        ny_free(ctx->got_plt_data, ctx->got_plt_data_capacity);
+    }
+    if (ctx->rela_plt_data) {
+        ny_free(ctx->rela_plt_data, ctx->rela_plt_data_capacity);
+    }
+    if (ctx->hash_data) {
+        ny_free(ctx->hash_data, ctx->hash_data_capacity);
+    }
+    if (ctx->dynamic_linker) {
+        ny_free(ctx->dynamic_linker, strlen(ctx->dynamic_linker) + 1);
+    }
 
     ny_free(ctx, sizeof(Nylink_Context));
 }
@@ -162,6 +193,14 @@ void nylink_context_destroy(Nylink_Context *ctx) {
 void nylink_context_set_shared(Nylink_Context *ctx, bool is_shared) {
     if (ctx) {
         ctx->is_shared = is_shared;
+        ctx->output_mode = is_shared ? NYLINK_OUTPUT_SHARED : NYLINK_OUTPUT_EXECUTABLE;
+    }
+}
+
+void nylink_context_set_output_mode(Nylink_Context *ctx, Nylink_Output_Mode mode) {
+    if (ctx) {
+        ctx->output_mode = mode;
+        ctx->is_shared = (mode == NYLINK_OUTPUT_SHARED || mode == NYLINK_OUTPUT_PIE);
     }
 }
 
@@ -274,6 +313,7 @@ bool nylink_resolve_symbols(Nylink_Context *ctx) {
         }
 
         Resolved_Ref *curr = &refs[match_idx];
+        const Nylink_Symbol *curr_sym = &ctx->symbols[curr->sym_id];
 
         if (!curr->is_defined) {
             if (sym->is_defined) {
@@ -284,7 +324,17 @@ bool nylink_resolve_symbols(Nylink_Context *ctx) {
             }
         } else {
             if (sym->is_defined) {
-                if (curr->binding == NYLINK_SYM_GLOBAL && sym->binding == NYLINK_SYM_GLOBAL) {
+                if (curr_sym->is_dynamic && !sym->is_dynamic) {
+                    /* Static definition overrides dynamic definition from .so */
+                    curr->sym_id = sym->id;
+                    curr->is_defined = true;
+                    curr->binding = sym->binding;
+                    curr->obj_index = sym->obj_index;
+                } else if (!curr_sym->is_dynamic && sym->is_dynamic) {
+                    /* Keep static definition */
+                } else if (curr_sym->is_dynamic && sym->is_dynamic) {
+                    /* Both are from .so libraries: first one wins, not a duplicate error */
+                } else if (curr->binding == NYLINK_SYM_GLOBAL && sym->binding == NYLINK_SYM_GLOBAL) {
                     const char *obj1 = curr->obj_index < ctx->object_count ? ctx->objects[curr->obj_index].name : "<unknown>";
                     const char *obj2 = sym->obj_index < ctx->object_count ? ctx->objects[sym->obj_index].name : "<unknown>";
                     char msg[256];
@@ -303,8 +353,9 @@ bool nylink_resolve_symbols(Nylink_Context *ctx) {
 
     for (size_t r = 0; r < ref_count; r++) {
         if (!refs[r].is_defined) {
-            if (ctx->is_shared) {
-                /* In shared mode, undefined external references are resolved dynamically at runtime */
+            if (ctx->is_shared || refs[r].binding == NYLINK_SYM_WEAK) {
+                /* Undefined externals resolve at runtime in shared/PIE output;
+                   weak undefined references resolve to 0 everywhere */
                 continue;
             }
             const char *obj_name = refs[r].obj_index < ctx->object_count ? ctx->objects[refs[r].obj_index].name : "<unknown>";
@@ -312,6 +363,28 @@ bool nylink_resolve_symbols(Nylink_Context *ctx) {
             snprintf(msg, sizeof(msg), "undefined symbol: %s", refs[r].name);
             nylink_diag_add(ctx, msg, obj_name, refs[r].name);
             success = false;
+        }
+    }
+
+    if (success && ctx->symbol_count > 0 && !ctx->resolved_symbols) {
+        ctx->resolved_symbols = (Nylink_Resolved_Sym *)ny_alloc_zero(ctx->symbol_count * sizeof(Nylink_Resolved_Sym));
+        for (size_t i = 0; i < ctx->symbol_count; i++) {
+            ctx->resolved_symbols[i].sym_id = (uint32_t)i;
+            ctx->resolved_symbols[i].is_defined = ctx->symbols[i].is_defined;
+            ctx->resolved_symbols[i].is_dynamic = ctx->symbols[i].is_dynamic;
+        }
+
+        for (size_t i = 0; i < ctx->symbol_count; i++) {
+            const Nylink_Symbol *sym = &ctx->symbols[i];
+            if (sym->binding == NYLINK_SYM_LOCAL || !sym->name || sym->name[0] == '\0') {
+                continue;
+            }
+            for (size_t r = 0; r < ref_count; r++) {
+                if (strcmp(refs[r].name, sym->name) != 0) continue;
+                ctx->resolved_symbols[i].is_defined = refs[r].is_defined;
+                ctx->resolved_symbols[i].is_dynamic = refs[r].is_defined && ctx->symbols[refs[r].sym_id].is_dynamic;
+                break;
+            }
         }
     }
 
@@ -384,10 +457,14 @@ const Nylink_Symbol *nylink_find_symbol(const Nylink_Context *ctx, const char *n
     for (size_t i = 0; i < ctx->symbol_count; i++) {
         const Nylink_Symbol *sym = &ctx->symbols[i];
         if (sym->name && strcmp(sym->name, name) == 0) {
-            if (sym->is_defined && sym->binding == NYLINK_SYM_GLOBAL) {
+            if (sym->is_defined && !sym->is_dynamic && sym->binding == NYLINK_SYM_GLOBAL) {
                 return sym;
             }
-            if (sym->is_defined && sym->binding == NYLINK_SYM_WEAK) {
+            if (sym->is_defined && !sym->is_dynamic && sym->binding == NYLINK_SYM_WEAK) {
+                if (!candidate || !candidate->is_defined || candidate->is_dynamic) {
+                    candidate = sym;
+                }
+            } else if (sym->is_defined && sym->is_dynamic) {
                 if (!candidate || !candidate->is_defined) {
                     candidate = sym;
                 }

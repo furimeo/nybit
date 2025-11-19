@@ -118,6 +118,8 @@ static int do_cli_link(int argc, char **argv) {
     const char *entry_point = nullptr;
     const char *base_str = nullptr;
     bool is_shared = false;
+    bool is_pie = false;
+    const char *dynamic_linker = nullptr;
     const char *soname = nullptr;
     const char **needed_libs = nullptr;
     size_t needed_lib_count = 0;
@@ -144,6 +146,12 @@ static int do_cli_link(int argc, char **argv) {
             output_file = arg + 2;
         } else if (strcmp(arg, "--shared") == 0 || strcmp(arg, "-shared") == 0) {
             is_shared = true;
+        } else if (strcmp(arg, "--pie") == 0 || strcmp(arg, "-pie") == 0) {
+            is_pie = true;
+        } else if (strncmp(arg, "--dynamic-linker=", 17) == 0) {
+            dynamic_linker = arg + 17;
+        } else if (strcmp(arg, "--dynamic-linker") == 0 && i + 1 < argc) {
+            dynamic_linker = argv[++i];
         } else if (strncmp(arg, "--soname=", 9) == 0) {
             soname = arg + 9;
         } else if (strcmp(arg, "--soname") == 0 && i + 1 < argc) {
@@ -243,8 +251,8 @@ static int do_cli_link(int argc, char **argv) {
         }
     }
 
-    if (is_shared && target_format == NYLINK_TARGET_PE) {
-        fprintf(stderr, "error: --shared is not supported for PE target\n");
+    if ((is_shared || is_pie) && target_format == NYLINK_TARGET_PE) {
+        fprintf(stderr, "error: %s is not supported for PE target\n", is_shared ? "--shared" : "--pie");
         for (size_t k = 0; k < input_count; k++) {
             ny_free(inputs[k].path, strlen(inputs[k].path) + 1);
         }
@@ -266,7 +274,7 @@ static int do_cli_link(int argc, char **argv) {
     if (target_format == NYLINK_TARGET_PE) {
         base_address = 0x140000000ULL;
     } else {
-        base_address = is_shared ? 0x0ULL : 0x400000ULL;
+        base_address = (is_shared || is_pie) ? 0x0ULL : 0x400000ULL;
     }
 
     if (base_str) {
@@ -302,6 +310,8 @@ static int do_cli_link(int argc, char **argv) {
             for (size_t d = 0; d < search_dir_count; d++) {
                 const char *dir = search_dirs[d];
                 if (target_format == NYLINK_TARGET_ELF64) {
+                    snprintf(resolved_path, sizeof(resolved_path), "%s/lib%s.so", dir, lib_name);
+                    if (file_exists(resolved_path)) { found = true; break; }
                     snprintf(resolved_path, sizeof(resolved_path), "%s/lib%s.a", dir, lib_name);
                     if (file_exists(resolved_path)) { found = true; break; }
                 } else {
@@ -353,7 +363,11 @@ static int do_cli_link(int argc, char **argv) {
     if (!load_ok || nylink_has_errors(ctx)) {
         exit_code = 1;
     } else {
-        nylink_context_set_shared(ctx, is_shared);
+        if (is_pie) {
+            nylink_context_set_output_mode(ctx, NYLINK_OUTPUT_PIE);
+        } else if (is_shared) {
+            nylink_context_set_output_mode(ctx, NYLINK_OUTPUT_SHARED);
+        }
         if (!nylink_resolve_symbols(ctx)) {
             exit_code = 1;
         } else {
@@ -370,11 +384,19 @@ static int do_cli_link(int argc, char **argv) {
                 }
             }
 
+            Nylink_Output_Mode out_mode = NYLINK_OUTPUT_EXECUTABLE;
+            if (is_pie) {
+                out_mode = NYLINK_OUTPUT_PIE;
+            } else if (is_shared) {
+                out_mode = NYLINK_OUTPUT_SHARED;
+            }
+
             Nylink_Config cfg = {
                 .target_format = target_format,
-                .output_mode = is_shared ? NYLINK_OUTPUT_SHARED : NYLINK_OUTPUT_EXECUTABLE,
+                .output_mode = out_mode,
                 .base_address = base_address,
                 .entry_point = is_shared ? entry_point : eff_entry,
+                .dynamic_linker = dynamic_linker,
                 .soname = soname,
                 .needed_libs = needed_libs,
                 .needed_lib_count = needed_lib_count,

@@ -13,6 +13,7 @@
 #define ELFDATA2LSB 1
 #define EV_CURRENT 1
 #define ET_REL 1
+#define ET_DYN 3
 #define EM_X86_64 62
 
 #define SHT_NULL 0
@@ -21,6 +22,16 @@
 #define SHT_STRTAB 3
 #define SHT_RELA 4
 #define SHT_NOBITS 8
+#define SHT_DYNAMIC 6
+#define SHT_DYNSYM 11
+
+#define DT_NULL 0
+#define DT_NEEDED 1
+#define DT_STRTAB 5
+#define DT_SYMTAB 6
+#define DT_SONAME 14
+
+#define PT_LOAD 1
 
 #define SHF_WRITE 0x1
 #define SHF_ALLOC 0x2
@@ -85,7 +96,25 @@ typedef struct Elf64_Rela {
     uint64_t r_info;
     int64_t r_addend;
 } Elf64_Rela;
+
+typedef struct Elf64_Phdr {
+    uint32_t p_type;
+    uint32_t p_flags;
+    uint64_t p_offset;
+    uint64_t p_vaddr;
+    uint64_t p_paddr;
+    uint64_t p_filesz;
+    uint64_t p_memsz;
+    uint64_t p_align;
+} Elf64_Phdr;
+
+typedef struct Elf64_Dyn {
+    int64_t d_tag;
+    uint64_t d_val;
+} Elf64_Dyn;
 #pragma pack(pop)
+
+bool nylink_read_elf_so(Nylink_Context *ctx, uint32_t obj_idx);
 
 bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
     Nylink_Object *obj = &ctx->objects[obj_idx];
@@ -107,6 +136,10 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
     if (ehdr->e_ident[4] != ELFCLASS64 || ehdr->e_ident[5] != ELFDATA2LSB) {
         nylink_diag_add(ctx, "unsupported object format: not 64-bit little endian ELF", obj->name, nullptr);
         return false;
+    }
+
+    if (ehdr->e_type == ET_DYN) {
+        return nylink_read_elf_so(ctx, obj_idx);
     }
 
     if (ehdr->e_type != ET_REL) {
@@ -189,6 +222,7 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
             elf_to_nylink_sec[s] = sec_id;
 
             Nylink_Section *nsec = &ctx->sections[sec_id];
+            memset(nsec, 0, sizeof(Nylink_Section));
             nsec->id = sec_id;
             nsec->obj_index = obj_idx;
             nsec->kind = kind;
@@ -280,6 +314,7 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
             elf_to_nylink_sym[i] = sym_id;
 
             Nylink_Symbol *nsym = &ctx->symbols[sym_id];
+            memset(nsym, 0, sizeof(Nylink_Symbol));
             nsym->id = sym_id;
             size_t nlen = strlen(sym_name);
             nsym->name = (char *)ny_alloc(nlen + 1);
@@ -291,6 +326,8 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
             nsym->size = (size_t)esym->st_size;
             nsym->obj_index = obj_idx;
             nsym->visibility = esym->st_other & 0x03;
+            nsym->is_function = (type == STT_FUNC);
+            nsym->is_object = (type == STT_OBJECT);
         }
         obj->sym_count = syms_added;
     }
@@ -364,5 +401,204 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
 
     ny_free(elf_to_nylink_sec, shnum * sizeof(uint32_t));
     if (elf_to_nylink_sym) ny_free(elf_to_nylink_sym, elf_sym_count * sizeof(uint32_t));
+    return true;
+}
+
+static bool nylink_strtab_offset_valid(const char *strtab, size_t strtab_size, uint64_t off) {
+    if (off >= strtab_size) return false;
+    if (strtab[strtab_size - 1] != '\0') return false;
+    return memchr(strtab + off, '\0', strtab_size - off) != nullptr;
+}
+
+bool nylink_read_elf_so(Nylink_Context *ctx, uint32_t obj_idx) {
+    Nylink_Object *obj = &ctx->objects[obj_idx];
+    const uint8_t *data = obj->data;
+    size_t size = obj->size;
+
+    const Elf64_Ehdr *ehdr = (const Elf64_Ehdr *)data;
+    if (ehdr->e_machine != EM_X86_64) {
+        nylink_diag_add(ctx, "unsupported shared library format: machine is not x86_64", obj->name, nullptr);
+        return false;
+    }
+
+    if (ehdr->e_phentsize != sizeof(Elf64_Phdr)) {
+        nylink_diag_add(ctx, "malformed shared library: unexpected program header entry size", obj->name, nullptr);
+        return false;
+    }
+
+    uint64_t phoff = ehdr->e_phoff;
+    uint64_t phnum = ehdr->e_phnum;
+    if (phnum > 0xFFFF || phoff > size || (phoff + phnum * sizeof(Elf64_Phdr)) > size) {
+        nylink_diag_add(ctx, "malformed shared library: program header table out of bounds", obj->name, nullptr);
+        return false;
+    }
+
+    bool has_pt_load = false;
+    const Elf64_Phdr *phdrs = (const Elf64_Phdr *)(data + phoff);
+    for (size_t p = 0; p < phnum; p++) {
+        if (phdrs[p].p_type == PT_LOAD) {
+            has_pt_load = true;
+            if (phdrs[p].p_offset > size || phdrs[p].p_filesz > size ||
+                (phdrs[p].p_offset + phdrs[p].p_filesz) > size) {
+                nylink_diag_add(ctx, "malformed shared library: PT_LOAD segment out of bounds", obj->name, nullptr);
+                return false;
+            }
+        }
+    }
+    if (!has_pt_load) {
+        nylink_diag_add(ctx, "malformed shared library: no PT_LOAD segment", obj->name, nullptr);
+        return false;
+    }
+
+    uint64_t shoff = ehdr->e_shoff;
+    uint64_t shnum = ehdr->e_shnum;
+    if (shnum > 0xFFFF || (shnum * sizeof(Elf64_Shdr)) > size || shoff > size || (shoff + shnum * sizeof(Elf64_Shdr)) > size) {
+        nylink_diag_add(ctx, "malformed shared library: section header table out of bounds", obj->name, nullptr);
+        return false;
+    }
+
+    const Elf64_Shdr *shdrs = (const Elf64_Shdr *)(data + shoff);
+    const Elf64_Shdr *dynsym_shdr = nullptr;
+    const Elf64_Shdr *dynstr_shdr = nullptr;
+    const Elf64_Shdr *dynamic_shdr = nullptr;
+
+    for (size_t s = 1; s < shnum; s++) {
+        if (shdrs[s].sh_type == SHT_DYNSYM) {
+            if (!dynsym_shdr) {
+                dynsym_shdr = &shdrs[s];
+                if (dynsym_shdr->sh_link < shnum && shdrs[dynsym_shdr->sh_link].sh_type == SHT_STRTAB) {
+                    dynstr_shdr = &shdrs[dynsym_shdr->sh_link];
+                }
+            }
+        } else if (shdrs[s].sh_type == SHT_DYNAMIC && !dynamic_shdr) {
+            dynamic_shdr = &shdrs[s];
+        }
+    }
+
+    if (!dynsym_shdr || !dynstr_shdr) {
+        nylink_diag_add(ctx, "shared library missing .dynsym or .dynstr", obj->name, nullptr);
+        return false;
+    }
+
+    if (dynsym_shdr->sh_entsize != 0 && dynsym_shdr->sh_entsize != sizeof(Elf64_Sym)) {
+        nylink_diag_add(ctx, "malformed shared library: invalid .dynsym entry size", obj->name, nullptr);
+        return false;
+    }
+
+    if (dynsym_shdr->sh_offset > size || dynsym_shdr->sh_size > size || (dynsym_shdr->sh_offset + dynsym_shdr->sh_size) > size ||
+        dynstr_shdr->sh_offset > size || dynstr_shdr->sh_size > size || (dynstr_shdr->sh_offset + dynstr_shdr->sh_size) > size) {
+        nylink_diag_add(ctx, "malformed shared library: .dynsym or .dynstr out of bounds", obj->name, nullptr);
+        return false;
+    }
+
+    const char *dynstr = (const char *)(data + dynstr_shdr->sh_offset);
+    size_t dynstr_size = (size_t)dynstr_shdr->sh_size;
+    if (dynstr_size == 0 || dynstr[0] != '\0') {
+        nylink_diag_add(ctx, "malformed shared library: .dynstr missing leading null byte", obj->name, nullptr);
+        return false;
+    }
+
+    const char *lib_soname = nullptr;
+    if (dynamic_shdr) {
+        if (dynamic_shdr->sh_offset > size || dynamic_shdr->sh_size > size ||
+            (dynamic_shdr->sh_offset + dynamic_shdr->sh_size) > size ||
+            (dynamic_shdr->sh_size % sizeof(Elf64_Dyn)) != 0) {
+            nylink_diag_add(ctx, "malformed shared library: invalid .dynamic section bounds or entry size", obj->name, nullptr);
+            return false;
+        }
+
+        size_t dyn_count = dynamic_shdr->sh_size / sizeof(Elf64_Dyn);
+        const Elf64_Dyn *dyns = (const Elf64_Dyn *)(data + dynamic_shdr->sh_offset);
+        bool reached_null = false;
+        for (size_t d = 0; d < dyn_count; d++) {
+            if (dyns[d].d_tag == DT_NULL) {
+                reached_null = true;
+                break;
+            }
+            if (dyns[d].d_tag == DT_SONAME || dyns[d].d_tag == DT_NEEDED) {
+                if (!nylink_strtab_offset_valid(dynstr, dynstr_size, dyns[d].d_val)) {
+                    nylink_diag_add(ctx, "malformed shared library: dynamic string offset out of bounds or unterminated", obj->name, nullptr);
+                    return false;
+                }
+                if (dyns[d].d_tag == DT_SONAME && !lib_soname) {
+                    lib_soname = dynstr + dyns[d].d_val;
+                }
+            }
+        }
+        if (!reached_null) {
+            nylink_diag_add(ctx, "malformed shared library: .dynamic missing DT_NULL terminator", obj->name, nullptr);
+            return false;
+        }
+    }
+
+    obj->is_shared_input = true;
+
+    /* Record this library as a runtime dependency; SONAME wins over the file path */
+    const char *dep_name = lib_soname ? lib_soname : obj->name;
+    const char *last_slash = strrchr(dep_name, '/');
+    const char *last_bslash = strrchr(dep_name, '\\');
+    if (last_slash && (!last_bslash || last_slash > last_bslash)) dep_name = last_slash + 1;
+    else if (last_bslash) dep_name = last_bslash + 1;
+
+    bool already_needed = false;
+    for (size_t n = 0; n < ctx->needed_lib_count; n++) {
+        if (strcmp(ctx->needed_libs[n], dep_name) == 0) {
+            already_needed = true;
+            break;
+        }
+    }
+    if (!already_needed) {
+        size_t dlen = strlen(dep_name);
+        char *copy = (char *)ny_alloc(dlen + 1);
+        memcpy(copy, dep_name, dlen + 1);
+        ny_buf_grow((void **)&ctx->needed_libs, &ctx->needed_lib_capacity, ctx->needed_lib_count, sizeof(char *));
+        ctx->needed_libs[ctx->needed_lib_count++] = copy;
+    }
+
+    size_t dynsym_count = dynsym_shdr->sh_size / sizeof(Elf64_Sym);
+    const Elf64_Sym *dynsyms = (const Elf64_Sym *)(data + dynsym_shdr->sh_offset);
+    uint32_t syms_added = 0;
+    obj->first_sym_idx = (uint32_t)ctx->symbol_count;
+
+    for (size_t i = 1; i < dynsym_count; i++) {
+        const Elf64_Sym *esym = &dynsyms[i];
+        unsigned char bind = (esym->st_info >> 4);
+        unsigned char type = (esym->st_info & 0xF);
+
+        if (bind == STB_LOCAL) continue;
+        if (esym->st_shndx == 0) continue;
+
+        if (!nylink_strtab_offset_valid(dynstr, dynstr_size, esym->st_name)) {
+            nylink_diag_add(ctx, "malformed shared library: dynamic symbol name offset out of bounds or unterminated", obj->name, nullptr);
+            return false;
+        }
+        const char *sym_name = dynstr + esym->st_name;
+        if (!*sym_name) continue;
+
+        Nylink_Sym_Binding nbind = (bind == STB_WEAK) ? NYLINK_SYM_WEAK : NYLINK_SYM_GLOBAL;
+
+        ny_buf_grow((void **)&ctx->symbols, &ctx->symbol_capacity, ctx->symbol_count, sizeof(Nylink_Symbol));
+        uint32_t sym_id = (uint32_t)ctx->symbol_count++;
+        syms_added++;
+
+        Nylink_Symbol *nsym = &ctx->symbols[sym_id];
+        memset(nsym, 0, sizeof(Nylink_Symbol));
+        nsym->id = sym_id;
+        size_t nlen = strlen(sym_name);
+        nsym->name = (char *)ny_alloc(nlen + 1);
+        memcpy(nsym->name, sym_name, nlen + 1);
+        nsym->binding = nbind;
+        nsym->is_defined = true;
+        nsym->is_dynamic = true;
+        nsym->is_function = (type == STT_FUNC);
+        nsym->is_object = (type == STT_OBJECT);
+        nsym->sec_id = UINT32_MAX;
+        nsym->value = esym->st_value;
+        nsym->size = (size_t)esym->st_size;
+        nsym->obj_index = obj_idx;
+        nsym->visibility = esym->st_other & 0x03;
+    }
+
+    obj->sym_count = syms_added;
     return true;
 }
