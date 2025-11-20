@@ -131,6 +131,9 @@ void nylink_context_destroy(Nylink_Context *ctx) {
     if (ctx->soname) {
         ny_free(ctx->soname, strlen(ctx->soname) + 1);
     }
+    if (ctx->rpath) {
+        ny_free(ctx->rpath, strlen(ctx->rpath) + 1);
+    }
     for (size_t i = 0; i < ctx->needed_lib_count; i++) {
         if (ctx->needed_libs[i]) {
             ny_free(ctx->needed_libs[i], strlen(ctx->needed_libs[i]) + 1);

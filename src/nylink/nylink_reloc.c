@@ -248,6 +248,34 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
             }
 
             write_disp32(out_sec->data + target_sec_offset, (uint32_t)(int32_t)val);
+        } else if (reloc->type == NYLINK_RELOC_X86_64_GOTPCREL) {
+            if (target_sec_offset + 4 > out_sec->data_capacity || target_sec_offset + 4 > out_sec->file_size) {
+                nylink_diag_add(ctx, "relocation write out of bounds", in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            uint64_t target_va = 0;
+            if (plan == NYLINK_PLAN_GOT_LOAD) {
+                target_va = ctx->got_va + (uint64_t)slot * 8;
+            } else {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "internal error: unexpected plan for GOTPCREL relocation against '%s'", sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            int64_t val = (int64_t)(target_va + (uint64_t)reloc->addend) - (int64_t)place_va;
+            if (val < (int64_t)INT32_MIN || val > (int64_t)INT32_MAX) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "relocation overflow: GOTPCREL value %lld out of 32-bit range for symbol '%s'", (long long)val, sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            write_disp32(out_sec->data + target_sec_offset, (uint32_t)(int32_t)val);
         } else {
             char msg[256];
             snprintf(msg, sizeof(msg), "unsupported relocation type: %d", (int)reloc->type);

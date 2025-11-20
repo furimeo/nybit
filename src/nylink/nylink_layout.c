@@ -158,6 +158,11 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         ctx->dynamic_linker = (char *)ny_alloc(dlen + 1);
         memcpy(ctx->dynamic_linker, cfg->dynamic_linker, dlen + 1);
     }
+    if (cfg && cfg->rpath && !ctx->rpath) {
+        size_t rlen = strlen(cfg->rpath);
+        ctx->rpath = (char *)ny_alloc(rlen + 1);
+        memcpy(ctx->rpath, cfg->rpath, rlen + 1);
+    }
     if (cfg) {
         for (size_t i = 0; i < cfg->needed_lib_count; i++) {
             if (cfg->needed_libs[i]) {
@@ -174,6 +179,13 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
                 break;
             }
         }
+    }
+
+    if (is_elf_target && ctx->uses_dynamic && ctx->output_mode != NYLINK_OUTPUT_SHARED && !ctx->dynamic_linker) {
+        const char *default_interp = "/lib64/ld-linux-x86-64.so.2";
+        size_t dlen = strlen(default_interp);
+        ctx->dynamic_linker = (char *)ny_alloc(dlen + 1);
+        memcpy(ctx->dynamic_linker, default_interp, dlen + 1);
     }
 
     if (!ctx->is_laid_out) {
@@ -307,6 +319,16 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
                 continue;
             }
 
+            if (reloc->type == NYLINK_RELOC_X86_64_GOTPCREL) {
+                if (ctx->import_got_idx[imp] == UINT32_MAX) {
+                    ctx->import_got_idx[imp] = (uint32_t)got_data_count++;
+                    rela_dyn_count++;
+                }
+                ctx->reloc_plans[r] = NYLINK_PLAN_GOT_LOAD;
+                ctx->reloc_plan_slots[r] = ctx->import_got_idx[imp];
+                continue;
+            }
+
             if (reloc->type == NYLINK_RELOC_X86_64_PC32 || reloc->type == NYLINK_RELOC_X86_64_PLT32) {
                 bool want_plt = (reloc->type == NYLINK_RELOC_X86_64_PLT32) || sym->is_function;
                 if (want_plt) {
@@ -316,12 +338,13 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
                     ctx->reloc_plans[r] = NYLINK_PLAN_PLT_CALL;
                     ctx->reloc_plan_slots[r] = ctx->import_plt_idx[imp];
                 } else {
-                    if (ctx->import_got_idx[imp] == UINT32_MAX) {
-                        ctx->import_got_idx[imp] = (uint32_t)got_data_count++;
-                    }
-                    ctx->reloc_plans[r] = NYLINK_PLAN_GOT_LOAD;
-                    ctx->reloc_plan_slots[r] = ctx->import_got_idx[imp];
-                    rela_dyn_count++;
+                    const Nylink_Section *in_sec = &ctx->sections[reloc->sec_id];
+                    char msg[256];
+                    snprintf(msg, sizeof(msg),
+                             "relocation R_X86_64_PC32 against dynamic data symbol '%s' in section '%s': copy relocations are not supported; recompile with -fPIC/-fPIE",
+                             sym->name, in_sec->name);
+                    nylink_diag_add(ctx, msg, in_sec->name, sym->name);
+                    return false;
                 }
             }
         }
@@ -359,6 +382,9 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
 
         if (ctx->soname) {
             dynstr_intern(ctx, ctx->soname, strlen(ctx->soname));
+        }
+        if (ctx->rpath) {
+            dynstr_intern(ctx, ctx->rpath, strlen(ctx->rpath));
         }
         for (size_t i = 0; i < ctx->needed_lib_count; i++) {
             if (ctx->needed_libs[i]) {
@@ -432,7 +458,7 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         ctx->rela_dyn_count = rela_dyn_count;
         ctx->rela_dyn_file_size = rela_dyn_count * 24;
 
-        size_t dynamic_entries = 6 + (ctx->soname ? 1 : 0) + ctx->needed_lib_count;
+        size_t dynamic_entries = 8 + (ctx->soname ? 1 : 0) + (ctx->rpath ? 1 : 0) + ctx->needed_lib_count;
         if (ctx->rela_dyn_file_size > 0) dynamic_entries += 3;
         if (ctx->rela_plt_file_size > 0) dynamic_entries += 4;
         ctx->dynamic_file_size = dynamic_entries * 16;

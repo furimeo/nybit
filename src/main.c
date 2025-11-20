@@ -121,6 +121,7 @@ static int do_cli_link(int argc, char **argv) {
     bool is_pie = false;
     const char *dynamic_linker = nullptr;
     const char *soname = nullptr;
+    const char *rpath = nullptr;
     const char **needed_libs = nullptr;
     size_t needed_lib_count = 0;
     size_t needed_lib_capacity = 0;
@@ -156,6 +157,14 @@ static int do_cli_link(int argc, char **argv) {
             soname = arg + 9;
         } else if (strcmp(arg, "--soname") == 0 && i + 1 < argc) {
             soname = argv[++i];
+        } else if (strncmp(arg, "--rpath=", 8) == 0) {
+            rpath = arg + 8;
+        } else if (strcmp(arg, "--rpath") == 0 && i + 1 < argc) {
+            rpath = argv[++i];
+        } else if (strncmp(arg, "-rpath=", 7) == 0) {
+            rpath = arg + 7;
+        } else if (strcmp(arg, "-rpath") == 0 && i + 1 < argc) {
+            rpath = argv[++i];
         } else if (strncmp(arg, "--needed=", 9) == 0) {
             const char *lib = arg + 9;
             ny_buf_grow((void **)&needed_libs, &needed_lib_capacity, needed_lib_count, sizeof(const char *));
@@ -398,6 +407,7 @@ static int do_cli_link(int argc, char **argv) {
                 .entry_point = is_shared ? entry_point : eff_entry,
                 .dynamic_linker = dynamic_linker,
                 .soname = soname,
+                .rpath = rpath,
                 .needed_libs = needed_libs,
                 .needed_lib_count = needed_lib_count,
             };

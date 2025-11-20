@@ -476,3 +476,51 @@ void test_cli_link_shared_options(void) {
     remove("bin/cli_so_input.o");
     ny_obj_buf_destroy(&obj1);
 }
+
+void test_cli_link_pie_options(void) {
+    Ny_Object_Buffer obj1, obj2;
+    ny_obj_buf_init(&obj1);
+    ny_obj_buf_init(&obj2);
+
+    emit_cli_dummy_elf(&obj1, "pie_entry", true, "so_add");
+    emit_cli_dummy_elf(&obj2, "so_add", false, nullptr);
+
+    write_file("bin/cli_pie_main.o", obj1.bytes, obj1.count);
+    write_file("bin/cli_pie_lib.o", obj2.bytes, obj2.count);
+
+    /* 1. Build shared library libpie_math.so */
+    int ret_so = system("bin\\nybit.exe link --target=elf64 --shared bin/cli_pie_lib.o --soname=libpie_math.so -o bin/libpie_math.so");
+    TEST_ASSERT_EQ(ret_so, 0);
+
+    /* 2. Build PIE executable referencing libpie_math.so via -L, -l, --rpath, and --pie */
+    int ret_pie = system("bin\\nybit.exe link --target=elf64 --pie bin/cli_pie_main.o -Lbin -lpie_math --rpath=$ORIGIN --entry=pie_entry -o bin/cli_pie_app");
+    TEST_ASSERT_EQ(ret_pie, 0);
+
+    FILE *f = fopen("bin/cli_pie_app", "rb");
+    TEST_ASSERT(f != nullptr);
+
+    uint8_t ident[16];
+    TEST_ASSERT_EQ(fread(ident, 1, 16, f), 16);
+    TEST_ASSERT_EQ(ident[0], 0x7F);
+    TEST_ASSERT_EQ(ident[1], 'E');
+    TEST_ASSERT_EQ(ident[2], 'L');
+    TEST_ASSERT_EQ(ident[3], 'F');
+
+    uint16_t e_type = 0;
+    TEST_ASSERT_EQ(fread(&e_type, 2, 1, f), 1);
+    TEST_ASSERT_EQ(e_type, 3); /* ET_DYN (PIE executable) */
+
+    fclose(f);
+
+    /* 3. Rejection of --pie on PE target */
+    int ret_pe = system("bin\\nybit.exe link --target=pe-x86-64 --pie bin/cli_pie_main.o -o bin/pie.exe 2>NUL");
+    TEST_ASSERT(ret_pe != 0);
+
+    remove("bin/cli_pie_app");
+    remove("bin/libpie_math.so");
+    remove("bin/cli_pie_lib.o");
+    remove("bin/cli_pie_main.o");
+
+    ny_obj_buf_destroy(&obj2);
+    ny_obj_buf_destroy(&obj1);
+}

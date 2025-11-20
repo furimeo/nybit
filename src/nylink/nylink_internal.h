@@ -123,6 +123,7 @@ struct Nylink_Context {
     Nylink_Output_Mode output_mode;
     char *dynamic_linker;
     char *soname;
+    char *rpath;
     char **needed_libs;
     size_t needed_lib_count;
     size_t needed_lib_capacity;

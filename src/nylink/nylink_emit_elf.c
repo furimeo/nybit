@@ -54,6 +54,11 @@
 #define DT_SONAME 14
 #define DT_PLTREL 20
 #define DT_JMPREL 23
+#define DT_BIND_NOW 24
+#define DT_RUNPATH 29
+#define DT_FLAGS 30
+
+#define DF_BIND_NOW 0x8
 
 #define STB_GLOBAL 1
 #define STB_WEAK 2
@@ -699,6 +704,11 @@ bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, cons
             dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_PLTREL, .d_val = 7 };
             dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_JMPREL, .d_val = ctx->rela_plt_va };
         }
+        if (ctx->rpath) {
+            dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_RUNPATH, .d_val = dynstr_offset_of(ctx, ctx->rpath) };
+        }
+        dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_FLAGS, .d_val = DF_BIND_NOW };
+        dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_BIND_NOW, .d_val = 1 };
         dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_NULL, .d_val = 0 };
 
         pad_file_to(f, ctx->dynamic_file_offset);

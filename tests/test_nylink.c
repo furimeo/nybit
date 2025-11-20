@@ -64,6 +64,12 @@ typedef struct Elf64_Test_Dyn {
     uint64_t d_val;
 } Elf64_Test_Dyn;
 
+typedef struct Elf64_Test_Rela {
+    uint64_t r_offset;
+    uint64_t r_info;
+    int64_t  r_addend;
+} Elf64_Test_Rela;
+
 typedef struct Pe_Test_Dos_Header {
     uint16_t e_magic;
     uint16_t e_cblp;
@@ -181,8 +187,82 @@ static void emit_dummy_elf_with_addend(Ny_Object_Buffer *obj_buf, const char *fn
     x86_encoded_mod_destroy(&emod);
 }
 
+static void emit_dummy_elf_data_ref(Ny_Object_Buffer *obj_buf, const char *fn_name, const char *data_target) {
+    X86_Encoded_Module emod;
+    x86_encoded_mod_init(&emod, ny_str("dummy_elf_data_ref"));
+
+    const uint8_t code[] = { 0x8b, 0x05, 0x00, 0x00, 0x00, 0x00, 0xc3 }; /* mov eax, [rip+disp32]; ret */
+    x86_buf_append_bytes(&emod.text_section, code, sizeof(code));
+
+    ny_buf_grow((void **)&emod.functions, &emod.function_capacity, emod.function_count + 1, sizeof(X86_Function_Code));
+    emod.functions[emod.function_count++] = (X86_Function_Code){
+        .name = ny_str(fn_name),
+        .offset = 0,
+        .size = sizeof(code),
+    };
+
+    X86_Relocation reloc = {
+        .kind = X86_FIXUP_GLOBAL_REL32,
+        .code_offset = 2,
+        .symbol_name = ny_str(data_target),
+        .addend = 0,
+    };
+    x86_buf_append_reloc(&emod.text_section, reloc);
+
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+
+    TEST_ASSERT(ny_emit_elf64_x86_64(obj_buf, &emod, &diags));
+
+    ny_diagnostic_list_destroy(&diags);
+    x86_encoded_mod_destroy(&emod);
+}
+
+static void emit_dummy_elf_gotpcrel(Ny_Object_Buffer *obj_buf, const char *fn_name, const char *data_target) {
+    emit_dummy_elf_data_ref(obj_buf, fn_name, data_target);
+
+    Elf64_Test_Ehdr *ehdr = (Elf64_Test_Ehdr *)obj_buf->bytes;
+    Elf64_Test_Shdr *shdrs = (Elf64_Test_Shdr *)(obj_buf->bytes + ehdr->e_shoff);
+    const char *shstrtab = (const char *)(obj_buf->bytes + shdrs[ehdr->e_shstrndx].sh_offset);
+
+    for (uint16_t s = 1; s < ehdr->e_shnum; s++) {
+        if (strcmp(shstrtab + shdrs[s].sh_name, ".rela.text") == 0) {
+            Elf64_Test_Rela *relas = (Elf64_Test_Rela *)(obj_buf->bytes + shdrs[s].sh_offset);
+            size_t nrelas = shdrs[s].sh_size / sizeof(Elf64_Test_Rela);
+            for (size_t r = 0; r < nrelas; r++) {
+                uint32_t sym_idx = (uint32_t)(relas[r].r_info >> 32);
+                relas[r].r_info = ((uint64_t)sym_idx << 32) | 9; /* R_X86_64_GOTPCREL */
+            }
+            break;
+        }
+    }
+}
+
 static void emit_dummy_elf(Ny_Object_Buffer *obj_buf, const char *fn_name, bool add_reloc, const char *reloc_target) {
     emit_dummy_elf_with_addend(obj_buf, fn_name, add_reloc, reloc_target, 0);
+}
+
+static void emit_dummy_elf_data(Ny_Object_Buffer *obj_buf, const char *var_name) {
+    X86_Encoded_Module emod;
+    x86_encoded_mod_init(&emod, ny_str("dummy_elf_data"));
+
+    uint32_t val = 123;
+    x86_buf_append_bytes(&emod.data_section, (const uint8_t *)&val, sizeof(val));
+
+    ny_buf_grow((void **)&emod.globals, &emod.global_capacity, emod.global_count + 1, sizeof(X86_Encoded_Global));
+    emod.globals[emod.global_count++] = (X86_Encoded_Global){
+        .name = ny_str(var_name),
+        .kind = NY_GLOBAL_DATA,
+        .offset = 0,
+        .size = sizeof(val),
+        .align = 4,
+    };
+
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    TEST_ASSERT(ny_emit_elf64_x86_64(obj_buf, &emod, &diags));
+    ny_diagnostic_list_destroy(&diags);
+    x86_encoded_mod_destroy(&emod);
 }
 
 static void emit_dummy_coff(Ny_Object_Buffer *obj_buf, const char *fn_name, bool add_reloc, const char *reloc_target) {
@@ -1368,5 +1448,307 @@ void test_nylink_elf64_shared_emission(void) {
     ny_obj_buf_destroy(&obj2);
     ny_obj_buf_destroy(&obj1);
 }
+
+void test_nylink_pie_executable_emission(void) {
+    Ny_Object_Buffer obj1, obj2;
+    ny_obj_buf_init(&obj1);
+    ny_obj_buf_init(&obj2);
+
+    emit_dummy_elf(&obj1, "main", true, "so_target");
+    emit_dummy_elf(&obj2, "so_target", false, nullptr);
+
+    /* Write obj2 as a shared object input first */
+    Nylink_Context *so_ctx = nylink_context_create();
+    nylink_context_set_shared(so_ctx, true);
+    TEST_ASSERT(nylink_add_object(so_ctx, "dummy_so.o", obj2.bytes, obj2.count));
+    TEST_ASSERT(nylink_resolve_symbols(so_ctx));
+    Nylink_Config so_cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .output_mode = NYLINK_OUTPUT_SHARED,
+        .soname = "libdummy.so",
+    };
+    TEST_ASSERT(nylink_layout(so_ctx, &so_cfg));
+    TEST_ASSERT(nylink_apply_relocations(so_ctx));
+    const char *so_path = "bin/test_pie_dep.so";
+    TEST_ASSERT(nylink_write_executable(so_ctx, so_path, &so_cfg));
+    nylink_context_destroy(so_ctx);
+
+    /* Read so_path back into buffer */
+    FILE *f_so = fopen(so_path, "rb");
+    TEST_ASSERT(f_so != nullptr);
+    fseek(f_so, 0, SEEK_END);
+    long so_sz = ftell(f_so);
+    fseek(f_so, 0, SEEK_SET);
+    uint8_t *so_bytes = (uint8_t *)ny_alloc((size_t)so_sz);
+    TEST_ASSERT_EQ(fread(so_bytes, 1, (size_t)so_sz, f_so), (size_t)so_sz);
+    fclose(f_so);
+
+    /* Link PIE executable */
+    Nylink_Context *ctx = nylink_context_create();
+    nylink_context_set_output_mode(ctx, NYLINK_OUTPUT_PIE);
+    TEST_ASSERT(nylink_add_object(ctx, "main.o", obj1.bytes, obj1.count));
+    TEST_ASSERT(nylink_add_object(ctx, "libdummy.so", so_bytes, (size_t)so_sz));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    const char *needed[] = { "libdummy.so" };
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .output_mode = NYLINK_OUTPUT_PIE,
+        .entry_point = "main",
+        .rpath = "$ORIGIN",
+        .needed_libs = needed,
+        .needed_lib_count = 1,
+    };
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+
+    const char *pie_path = "bin/test_pie_out";
+    TEST_ASSERT(nylink_write_executable(ctx, pie_path, &cfg));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    /* Parse emitted PIE */
+    FILE *f = fopen(pie_path, "rb");
+    TEST_ASSERT(f != nullptr);
+    Elf64_Test_Ehdr ehdr;
+    TEST_ASSERT_EQ(fread(&ehdr, sizeof(ehdr), 1, f), 1);
+    TEST_ASSERT_EQ(ehdr.e_type, 3); /* ET_DYN */
+
+    Elf64_Test_Phdr phdrs[16];
+    fseek(f, (long)ehdr.e_phoff, SEEK_SET);
+    TEST_ASSERT_EQ(fread(phdrs, sizeof(Elf64_Test_Phdr), ehdr.e_phnum, f), ehdr.e_phnum);
+
+    bool has_pt_interp = false;
+    for (uint16_t p = 0; p < ehdr.e_phnum; p++) {
+        if (phdrs[p].p_type == 3) has_pt_interp = true; /* PT_INTERP */
+    }
+    TEST_ASSERT(has_pt_interp);
+
+    /* Validate section headers */
+    Elf64_Test_Shdr *shdrs = (Elf64_Test_Shdr *)ny_alloc_zero(ehdr.e_shnum * sizeof(Elf64_Test_Shdr));
+    fseek(f, (long)ehdr.e_shoff, SEEK_SET);
+    TEST_ASSERT_EQ(fread(shdrs, sizeof(Elf64_Test_Shdr), ehdr.e_shnum, f), ehdr.e_shnum);
+
+    uint16_t dynamic_sec_idx = 0;
+    char *shstrtab = (char *)ny_alloc_zero(shdrs[ehdr.e_shstrndx].sh_size);
+    fseek(f, (long)shdrs[ehdr.e_shstrndx].sh_offset, SEEK_SET);
+    TEST_ASSERT_EQ(fread(shstrtab, 1, shdrs[ehdr.e_shstrndx].sh_size, f), shdrs[ehdr.e_shstrndx].sh_size);
+
+    for (uint16_t s = 1; s < ehdr.e_shnum; s++) {
+        if (strcmp(shstrtab + shdrs[s].sh_name, ".dynamic") == 0) {
+            dynamic_sec_idx = s;
+            break;
+        }
+    }
+    TEST_ASSERT(dynamic_sec_idx != 0);
+
+    size_t dyn_entries_count = shdrs[dynamic_sec_idx].sh_size / sizeof(Elf64_Test_Dyn);
+    Elf64_Test_Dyn *dyn_entries = (Elf64_Test_Dyn *)ny_alloc_zero(shdrs[dynamic_sec_idx].sh_size);
+    fseek(f, (long)shdrs[dynamic_sec_idx].sh_offset, SEEK_SET);
+    TEST_ASSERT_EQ(fread(dyn_entries, sizeof(Elf64_Test_Dyn), dyn_entries_count, f), dyn_entries_count);
+
+    bool has_dt_runpath = false;
+    bool has_dt_flags = false;
+    bool has_dt_bind_now = false;
+    for (size_t d = 0; d < dyn_entries_count; d++) {
+        if (dyn_entries[d].d_tag == 29) has_dt_runpath = true; /* DT_RUNPATH */
+        if (dyn_entries[d].d_tag == 30 && (dyn_entries[d].d_val & 0x8)) has_dt_flags = true; /* DT_FLAGS DF_BIND_NOW */
+        if (dyn_entries[d].d_tag == 24 && dyn_entries[d].d_val == 1) has_dt_bind_now = true; /* DT_BIND_NOW */
+    }
+    TEST_ASSERT(has_dt_runpath);
+    TEST_ASSERT(has_dt_flags);
+    TEST_ASSERT(has_dt_bind_now);
+
+    ny_free(dyn_entries, shdrs[dynamic_sec_idx].sh_size);
+    ny_free(shstrtab, shdrs[ehdr.e_shstrndx].sh_size);
+    ny_free(shdrs, ehdr.e_shnum * sizeof(Elf64_Test_Shdr));
+    fclose(f);
+    remove(pie_path);
+    remove(so_path);
+    ny_free(so_bytes, (size_t)so_sz);
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj2);
+    ny_obj_buf_destroy(&obj1);
+}
+
+void test_nylink_copy_reloc_rejection(void) {
+    /* Build a dummy .so that exports an STT_OBJECT data symbol */
+    Ny_Object_Buffer so_obj;
+    ny_obj_buf_init(&so_obj);
+    emit_dummy_elf_data(&so_obj, "exported_data");
+
+    Nylink_Context *so_ctx = nylink_context_create();
+    nylink_context_set_shared(so_ctx, true);
+    TEST_ASSERT(nylink_add_object(so_ctx, "so.o", so_obj.bytes, so_obj.count));
+    TEST_ASSERT(nylink_resolve_symbols(so_ctx));
+    Nylink_Config so_cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .output_mode = NYLINK_OUTPUT_SHARED,
+        .soname = "libdataref.so",
+    };
+    TEST_ASSERT(nylink_layout(so_ctx, &so_cfg));
+    TEST_ASSERT(nylink_apply_relocations(so_ctx));
+    const char *so_path = "bin/test_copy_so.so";
+    TEST_ASSERT(nylink_write_executable(so_ctx, so_path, &so_cfg));
+    nylink_context_destroy(so_ctx);
+
+    FILE *f = fopen(so_path, "rb");
+    TEST_ASSERT(f != nullptr);
+    fseek(f, 0, SEEK_END);
+    long so_sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *so_bytes = (uint8_t *)ny_alloc((size_t)so_sz);
+    TEST_ASSERT_EQ(fread(so_bytes, 1, (size_t)so_sz, f), (size_t)so_sz);
+    fclose(f);
+
+    /* Build main object with PC32 relocation targeting an imported symbol marked as object */
+    Ny_Object_Buffer main_obj;
+    ny_obj_buf_init(&main_obj);
+    emit_dummy_elf_data_ref(&main_obj, "main", "exported_data");
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "main.o", main_obj.bytes, main_obj.count));
+    TEST_ASSERT(nylink_add_object(ctx, "libdataref.so", so_bytes, (size_t)so_sz));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .output_mode = NYLINK_OUTPUT_PIE,
+        .entry_point = "main",
+    };
+    /* Layout should fail and diagnose copy reloc rejection */
+    TEST_ASSERT(!nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_has_errors(ctx));
+
+    bool found_diag = false;
+    size_t dcount = nylink_get_diagnostic_count(ctx);
+    for (size_t d = 0; d < dcount; d++) {
+        const Nylink_Diagnostic *diag = nylink_get_diagnostic(ctx, d);
+        if (diag->message && strstr(diag->message, "copy relocations are not supported")) {
+            found_diag = true;
+            break;
+        }
+    }
+    TEST_ASSERT(found_diag);
+
+    nylink_context_destroy(ctx);
+    ny_free(so_bytes, (size_t)so_sz);
+    remove(so_path);
+    ny_obj_buf_destroy(&main_obj);
+    ny_obj_buf_destroy(&so_obj);
+}
+
+void test_nylink_gotpcrel_relocation(void) {
+    /* Build shared library exporting data symbol */
+    Ny_Object_Buffer so_obj;
+    ny_obj_buf_init(&so_obj);
+    emit_dummy_elf_data(&so_obj, "ext_data_val");
+
+    Nylink_Context *so_ctx = nylink_context_create();
+    nylink_context_set_shared(so_ctx, true);
+    TEST_ASSERT(nylink_add_object(so_ctx, "so.o", so_obj.bytes, so_obj.count));
+    TEST_ASSERT(nylink_resolve_symbols(so_ctx));
+    Nylink_Config so_cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .output_mode = NYLINK_OUTPUT_SHARED,
+        .soname = "libgotdata.so",
+    };
+    TEST_ASSERT(nylink_layout(so_ctx, &so_cfg));
+    TEST_ASSERT(nylink_apply_relocations(so_ctx));
+    const char *so_path = "bin/test_gotdata.so";
+    TEST_ASSERT(nylink_write_executable(so_ctx, so_path, &so_cfg));
+    nylink_context_destroy(so_ctx);
+
+    FILE *f_so = fopen(so_path, "rb");
+    TEST_ASSERT(f_so != nullptr);
+    fseek(f_so, 0, SEEK_END);
+    long so_sz = ftell(f_so);
+    fseek(f_so, 0, SEEK_SET);
+    uint8_t *so_bytes = (uint8_t *)ny_alloc((size_t)so_sz);
+    TEST_ASSERT_EQ(fread(so_bytes, 1, (size_t)so_sz, f_so), (size_t)so_sz);
+    fclose(f_so);
+
+    /* Build main object using GOTPCREL to reference ext_data_val */
+    Ny_Object_Buffer main_obj;
+    ny_obj_buf_init(&main_obj);
+    emit_dummy_elf_gotpcrel(&main_obj, "main", "ext_data_val");
+
+    Nylink_Context *ctx = nylink_context_create();
+    nylink_context_set_output_mode(ctx, NYLINK_OUTPUT_PIE);
+    TEST_ASSERT(nylink_add_object(ctx, "main.o", main_obj.bytes, main_obj.count));
+    TEST_ASSERT(nylink_add_object(ctx, "libgotdata.so", so_bytes, (size_t)so_sz));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_ELF64,
+        .output_mode = NYLINK_OUTPUT_PIE,
+        .entry_point = "main",
+    };
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+
+    const char *pie_path = "bin/test_gotpcrel_app";
+    TEST_ASSERT(nylink_write_executable(ctx, pie_path, &cfg));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    /* Validate output ELF */
+    FILE *f = fopen(pie_path, "rb");
+    TEST_ASSERT(f != nullptr);
+
+    Elf64_Test_Ehdr ehdr;
+    TEST_ASSERT_EQ(fread(&ehdr, sizeof(ehdr), 1, f), 1);
+    TEST_ASSERT_EQ(ehdr.e_type, 3); /* ET_DYN */
+
+    Elf64_Test_Shdr *shdrs = (Elf64_Test_Shdr *)ny_alloc_zero(ehdr.e_shnum * sizeof(Elf64_Test_Shdr));
+    fseek(f, (long)ehdr.e_shoff, SEEK_SET);
+    TEST_ASSERT_EQ(fread(shdrs, sizeof(Elf64_Test_Shdr), ehdr.e_shnum, f), ehdr.e_shnum);
+
+    char *shstrtab = (char *)ny_alloc_zero(shdrs[ehdr.e_shstrndx].sh_size);
+    fseek(f, (long)shdrs[ehdr.e_shstrndx].sh_offset, SEEK_SET);
+    TEST_ASSERT_EQ(fread(shstrtab, 1, shdrs[ehdr.e_shstrndx].sh_size, f), shdrs[ehdr.e_shstrndx].sh_size);
+
+    uint16_t got_idx = 0;
+    uint16_t rela_dyn_idx = 0;
+    for (uint16_t s = 1; s < ehdr.e_shnum; s++) {
+        if (strcmp(shstrtab + shdrs[s].sh_name, ".got") == 0) got_idx = s;
+        if (strcmp(shstrtab + shdrs[s].sh_name, ".rela.dyn") == 0) rela_dyn_idx = s;
+    }
+
+    TEST_ASSERT(got_idx != 0);
+    TEST_ASSERT(rela_dyn_idx != 0);
+    TEST_ASSERT(shdrs[got_idx].sh_size >= 8);
+
+    /* Read .rela.dyn entries and find R_X86_64_GLOB_DAT targeting .got */
+    size_t num_relas = shdrs[rela_dyn_idx].sh_size / sizeof(Elf64_Test_Rela);
+    TEST_ASSERT(num_relas >= 1);
+    Elf64_Test_Rela *relas = (Elf64_Test_Rela *)ny_alloc_zero(shdrs[rela_dyn_idx].sh_size);
+    fseek(f, (long)shdrs[rela_dyn_idx].sh_offset, SEEK_SET);
+    TEST_ASSERT_EQ(fread(relas, sizeof(Elf64_Test_Rela), num_relas, f), num_relas);
+
+    bool found_glob_dat = false;
+    for (size_t r = 0; r < num_relas; r++) {
+        uint32_t r_type = (uint32_t)(relas[r].r_info & 0xFFFFFFFF);
+        if (r_type == 6) { /* R_X86_64_GLOB_DAT */
+            if (relas[r].r_offset >= shdrs[got_idx].sh_addr &&
+                relas[r].r_offset < shdrs[got_idx].sh_addr + shdrs[got_idx].sh_size) {
+                found_glob_dat = true;
+                break;
+            }
+        }
+    }
+    TEST_ASSERT(found_glob_dat);
+
+    ny_free(relas, shdrs[rela_dyn_idx].sh_size);
+    ny_free(shstrtab, shdrs[ehdr.e_shstrndx].sh_size);
+    ny_free(shdrs, ehdr.e_shnum * sizeof(Elf64_Test_Shdr));
+    fclose(f);
+
+    remove(pie_path);
+    remove(so_path);
+    ny_free(so_bytes, (size_t)so_sz);
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&main_obj);
+    ny_obj_buf_destroy(&so_obj);
+}
+
 
 

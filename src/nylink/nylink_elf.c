@@ -50,6 +50,9 @@
 #define R_X86_64_64 1
 #define R_X86_64_PC32 2
 #define R_X86_64_PLT32 4
+#define R_X86_64_GOTPCREL 9
+#define R_X86_64_GOTPCRELX 41
+#define R_X86_64_REX_GOTPCRELX 42
 
 #pragma pack(push, 1)
 typedef struct Elf64_Ehdr {
@@ -382,6 +385,9 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
                 if (type == R_X86_64_64) rtype = NYLINK_RELOC_X86_64_64;
                 else if (type == R_X86_64_PC32) rtype = NYLINK_RELOC_X86_64_PC32;
                 else if (type == R_X86_64_PLT32) rtype = NYLINK_RELOC_X86_64_PLT32;
+                else if (type == R_X86_64_GOTPCREL || type == R_X86_64_GOTPCRELX || type == R_X86_64_REX_GOTPCRELX) {
+                    rtype = NYLINK_RELOC_X86_64_GOTPCREL;
+                }
 
                 uint32_t nylink_sym_id = UINT32_MAX;
                 if (elf_to_nylink_sym && sym_idx < elf_sym_count) {

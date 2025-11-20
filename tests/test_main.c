@@ -158,6 +158,10 @@ void test_cli_link_determinism(void);
 void test_cli_link_e2e_execution(void);
 void test_nylink_elf64_shared_emission(void);
 void test_cli_link_shared_options(void);
+void test_nylink_pie_executable_emission(void);
+void test_nylink_copy_reloc_rejection(void);
+void test_cli_link_pie_options(void);
+void test_nylink_gotpcrel_relocation(void);
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -315,6 +319,10 @@ int main(void) {
     RUN_TEST(test_cli_link_e2e_execution);
     RUN_TEST(test_nylink_elf64_shared_emission);
     RUN_TEST(test_cli_link_shared_options);
+    RUN_TEST(test_nylink_pie_executable_emission);
+    RUN_TEST(test_nylink_copy_reloc_rejection);
+    RUN_TEST(test_cli_link_pie_options);
+    RUN_TEST(test_nylink_gotpcrel_relocation);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

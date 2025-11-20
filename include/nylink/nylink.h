@@ -36,6 +36,7 @@ typedef enum Nylink_Reloc_Type {
     NYLINK_RELOC_X86_64_64,
     NYLINK_RELOC_X86_64_PC32,
     NYLINK_RELOC_X86_64_PLT32,
+    NYLINK_RELOC_X86_64_GOTPCREL,
 } Nylink_Reloc_Type;
 
 typedef struct Nylink_Diagnostic {
@@ -96,6 +97,7 @@ typedef struct Nylink_Config {
     const char *entry_point;
     const char *soname;
     const char *dynamic_linker;
+    const char *rpath;
     const char *const *needed_libs;
     size_t needed_lib_count;
 } Nylink_Config;
