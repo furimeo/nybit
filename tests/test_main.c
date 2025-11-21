@@ -163,6 +163,19 @@ void test_nylink_copy_reloc_rejection(void);
 void test_cli_link_pie_options(void);
 void test_nylink_gotpcrel_relocation(void);
 
+void test_linux_runtime_env_detection(void);
+void test_linux_runtime_shared_lib_structure(void);
+void test_linux_runtime_pie_structure(void);
+void test_linux_runtime_e2e_function_import(void);
+void test_linux_runtime_e2e_data_import(void);
+void test_linux_runtime_dlopen_supplemental(void);
+void test_linux_runtime_negative_missing_so(void);
+void test_linux_runtime_negative_missing_symbol(void);
+void test_linux_runtime_negative_bad_interp(void);
+void test_linux_runtime_pie_aslr(void);
+void test_linux_runtime_determinism(void);
+void test_linux_runtime_readelf_inspection(void);
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -323,6 +336,19 @@ int main(void) {
     RUN_TEST(test_nylink_copy_reloc_rejection);
     RUN_TEST(test_cli_link_pie_options);
     RUN_TEST(test_nylink_gotpcrel_relocation);
+
+    RUN_TEST(test_linux_runtime_env_detection);
+    RUN_TEST(test_linux_runtime_shared_lib_structure);
+    RUN_TEST(test_linux_runtime_pie_structure);
+    RUN_TEST(test_linux_runtime_e2e_function_import);
+    RUN_TEST(test_linux_runtime_e2e_data_import);
+    RUN_TEST(test_linux_runtime_dlopen_supplemental);
+    RUN_TEST(test_linux_runtime_negative_missing_so);
+    RUN_TEST(test_linux_runtime_negative_missing_symbol);
+    RUN_TEST(test_linux_runtime_negative_bad_interp);
+    RUN_TEST(test_linux_runtime_pie_aslr);
+    RUN_TEST(test_linux_runtime_determinism);
+    RUN_TEST(test_linux_runtime_readelf_inspection);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

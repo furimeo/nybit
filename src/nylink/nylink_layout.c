@@ -459,6 +459,8 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         ctx->rela_dyn_file_size = rela_dyn_count * 24;
 
         size_t dynamic_entries = 8 + (ctx->soname ? 1 : 0) + (ctx->rpath ? 1 : 0) + ctx->needed_lib_count;
+        if (ctx->dynamic_linker) dynamic_entries++;
+        dynamic_entries++;
         if (ctx->rela_dyn_file_size > 0) dynamic_entries += 3;
         if (ctx->rela_plt_file_size > 0) dynamic_entries += 4;
         ctx->dynamic_file_size = dynamic_entries * 16;

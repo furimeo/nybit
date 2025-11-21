@@ -19,6 +19,7 @@
 #define PT_LOAD 1
 #define PT_DYNAMIC 2
 #define PT_INTERP 3
+#define PT_PHDR 6
 #define PT_GNU_STACK 0x6474e551
 #define PT_GNU_RELRO 0x6474e552
 
@@ -52,13 +53,17 @@
 #define DT_STRSZ 10
 #define DT_SYMENT 11
 #define DT_SONAME 14
+#define DT_DEBUG 21
 #define DT_PLTREL 20
 #define DT_JMPREL 23
 #define DT_BIND_NOW 24
 #define DT_RUNPATH 29
 #define DT_FLAGS 30
+#define DT_FLAGS_1 0x6ffffffbLL
 
 #define DF_BIND_NOW 0x8
+#define DF_1_NOW 0x1ULL
+#define DF_1_PIE 0x08000000ULL
 
 #define STB_GLOBAL 1
 #define STB_WEAK 2
@@ -314,6 +319,19 @@ bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, cons
         phdrs[phnum].p_filesz = 0;
         phdrs[phnum].p_memsz = 0;
         phdrs[phnum].p_align = 0x10;
+        phnum++;
+    }
+
+    if (dyn) {
+        memmove(&phdrs[1], &phdrs[0], (size_t)phnum * sizeof(Elf64_Phdr));
+        phdrs[0].p_type = PT_PHDR;
+        phdrs[0].p_flags = PF_R;
+        phdrs[0].p_offset = sizeof(Elf64_Ehdr);
+        phdrs[0].p_vaddr = ctx->image_base + sizeof(Elf64_Ehdr);
+        phdrs[0].p_paddr = ctx->image_base + sizeof(Elf64_Ehdr);
+        phdrs[0].p_filesz = (uint64_t)(phnum + 1) * sizeof(Elf64_Phdr);
+        phdrs[0].p_memsz = (uint64_t)(phnum + 1) * sizeof(Elf64_Phdr);
+        phdrs[0].p_align = 8;
         phnum++;
     }
 
@@ -707,6 +725,12 @@ bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, cons
         if (ctx->rpath) {
             dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_RUNPATH, .d_val = dynstr_offset_of(ctx, ctx->rpath) };
         }
+        if (ctx->interp_file_size > 0) {
+            dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_DEBUG, .d_val = 0 };
+        }
+        uint64_t flags_1 = DF_1_NOW;
+        if (ctx->output_mode == NYLINK_OUTPUT_PIE) flags_1 |= DF_1_PIE;
+        dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_FLAGS_1, .d_val = flags_1 };
         dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_FLAGS, .d_val = DF_BIND_NOW };
         dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_BIND_NOW, .d_val = 1 };
         dyn_entries[cur_dyn++] = (Elf64_Dyn){ .d_tag = DT_NULL, .d_val = 0 };

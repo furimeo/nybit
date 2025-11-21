@@ -211,6 +211,10 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
                 kind = NYLINK_SEC_BSS;
             }
 
+            if (kind == NYLINK_SEC_UNKNOWN) {
+                continue;
+            }
+
             if (sh->sh_type == SHT_PROGBITS) {
                 if (sh->sh_offset > size || sh->sh_size > size || (sh->sh_offset + sh->sh_size) > size) {
                     nylink_diag_add(ctx, "malformed object: section data out of bounds", obj->name, sname);
@@ -392,6 +396,10 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
                 uint32_t nylink_sym_id = UINT32_MAX;
                 if (elf_to_nylink_sym && sym_idx < elf_sym_count) {
                     nylink_sym_id = elf_to_nylink_sym[sym_idx];
+                }
+
+                if (rtype == NYLINK_RELOC_NONE || nylink_sym_id == UINT32_MAX) {
+                    continue;
                 }
 
                 ny_buf_grow((void **)&ctx->relocations, &ctx->relocation_capacity, ctx->relocation_count, sizeof(Nylink_Relocation));
