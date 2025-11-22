@@ -346,7 +346,69 @@ bool nylink_read_archive(Nylink_Context *ctx, uint32_t arch_idx) {
                 uint16_t sig1 = (uint16_t)(mb[0] | (mb[1] << 8));
                 uint16_t sig2 = (uint16_t)(mb[2] | (mb[3] << 8));
                 if (sig1 == 0 && sig2 == 0xFFFF) {
-                    /* DLL import library member - ignore */
+                    /* DLL import library short-format member (IMPORT_OBJECT_HEADER) */
+                    if (member_size >= 20) {
+                        const char *sym_name = (const char *)(mb + 20);
+                        size_t sym_len = strlen(sym_name);
+                        if (20 + sym_len + 1 < member_size) {
+                            const char *dll_name = sym_name + sym_len + 1;
+                            if (dll_name[0] != '\0') {
+                                /* Record DLL name if not present */
+                                uint32_t dll_idx = UINT32_MAX;
+                                for (size_t d = 0; d < ctx->pe_dll_count; d++) {
+                                    if (strcmp(ctx->pe_dll_names[d], dll_name) == 0) {
+                                        dll_idx = (uint32_t)d;
+                                        break;
+                                    }
+                                }
+                                if (dll_idx == UINT32_MAX) {
+                                    ny_buf_grow((void **)&ctx->pe_dll_names, &ctx->pe_dll_capacity, ctx->pe_dll_count, sizeof(char *));
+                                    dll_idx = (uint32_t)ctx->pe_dll_count++;
+                                    size_t dlen = strlen(dll_name);
+                                    char *dcopy = (char *)ny_alloc(dlen + 1);
+                                    memcpy(dcopy, dll_name, dlen + 1);
+                                    ctx->pe_dll_names[dll_idx] = dcopy;
+                                }
+
+                                /* Record imported symbol */
+                                bool sym_exists = false;
+                                for (size_t k = 0; k < ctx->pe_imp_count; k++) {
+                                    if (strcmp(ctx->pe_imp_sym_names[k], sym_name) == 0) {
+                                        sym_exists = true;
+                                        break;
+                                    }
+                                }
+                                if (!sym_exists) {
+                                    size_t old_imp_cap = ctx->pe_imp_capacity;
+                                    if (ctx->pe_imp_count >= old_imp_cap) {
+                                        size_t new_cap = old_imp_cap == 0 ? 8 : old_imp_cap * 2;
+                                        while (new_cap <= ctx->pe_imp_count) new_cap *= 2;
+                                        ctx->pe_imp_sym_names   = (char **)ny_realloc(ctx->pe_imp_sym_names, old_imp_cap * sizeof(char *), new_cap * sizeof(char *));
+                                        ctx->pe_imp_dll_indices = (uint32_t *)ny_realloc(ctx->pe_imp_dll_indices, old_imp_cap * sizeof(uint32_t), new_cap * sizeof(uint32_t));
+                                        ctx->pe_imp_sym_ids     = (uint32_t *)ny_realloc(ctx->pe_imp_sym_ids, old_imp_cap * sizeof(uint32_t), new_cap * sizeof(uint32_t));
+                                        ctx->pe_imp_iat_rvas    = (uint32_t *)ny_realloc(ctx->pe_imp_iat_rvas, old_imp_cap * sizeof(uint32_t), new_cap * sizeof(uint32_t));
+                                        ctx->pe_imp_thunk_rvas  = (uint32_t *)ny_realloc(ctx->pe_imp_thunk_rvas, old_imp_cap * sizeof(uint32_t), new_cap * sizeof(uint32_t));
+                                        ctx->pe_imp_capacity = new_cap;
+                                    }
+
+                                    size_t imp_idx = ctx->pe_imp_count++;
+                                    char *scopy = (char *)ny_alloc(sym_len + 1);
+                                    memcpy(scopy, sym_name, sym_len + 1);
+                                    ctx->pe_imp_sym_names[imp_idx] = scopy;
+                                    ctx->pe_imp_dll_indices[imp_idx] = dll_idx;
+                                    ctx->pe_imp_sym_ids[imp_idx] = UINT32_MAX;
+                                    ctx->pe_imp_iat_rvas[imp_idx] = 0;
+                                    ctx->pe_imp_thunk_rvas[imp_idx] = 0;
+
+                                    /* Also add __imp_<sym_name> and <sym_name> to archive symbols so they can satisfy references */
+                                    add_archive_symbol(arch, sym_name, offset);
+                                    char imp_name_buf[512];
+                                    snprintf(imp_name_buf, sizeof(imp_name_buf), "__imp_%s", sym_name);
+                                    add_archive_symbol(arch, imp_name_buf, offset);
+                                }
+                            }
+                        }
+                    }
                 } else if (mb[0] == 0x7F && mb[1] == 'E' && mb[2] == 'L' && mb[3] == 'F') {
                     if (!seen_first_linker) {
                         index_symbols_from_elf(arch, mb, member_size, offset);
@@ -410,8 +472,52 @@ bool nylink_extract_needed_archive_members(Nylink_Context *ctx) {
                                 size_t msize = member->size;
 
                                 member->is_extracted = true;
-                                if (!nylink_add_object(ctx, display_name, mdata, msize)) {
-                                    return false;
+
+                                if (msize >= 20 && mdata[0] == 0 && mdata[1] == 0 && mdata[2] == 0xFF && mdata[3] == 0xFF) {
+                                    /* Short-format import header: define symbols in ctx->symbols */
+                                    const char *imp_sym = (const char *)(mdata + 20);
+                                    size_t imp_len = strlen(imp_sym);
+                                    uint16_t type_flags = (uint16_t)(mdata[18] | (mdata[19] << 8));
+                                    uint16_t type = type_flags & 0x3;
+                                    bool is_fn = (type == 0); /* 0 = IMPORT_CODE */
+
+                                    /* Define <sym> */
+                                    ny_buf_grow((void **)&ctx->symbols, &ctx->symbol_capacity, ctx->symbol_count, sizeof(Nylink_Symbol));
+                                    uint32_t s_id = (uint32_t)ctx->symbol_count++;
+                                    Nylink_Symbol *ns = &ctx->symbols[s_id];
+                                    memset(ns, 0, sizeof(Nylink_Symbol));
+                                    ns->id = s_id;
+                                    ns->name = (char *)ny_alloc(imp_len + 1);
+                                    memcpy(ns->name, imp_sym, imp_len + 1);
+                                    ns->binding = NYLINK_SYM_GLOBAL;
+                                    ns->is_defined = true;
+                                    ns->is_dynamic = true;
+                                    ns->is_function = is_fn;
+                                    ns->sec_id = UINT32_MAX;
+                                    ns->obj_index = UINT32_MAX;
+
+                                    /* Define __imp_<sym> */
+                                    char imp_name[512];
+                                    snprintf(imp_name, sizeof(imp_name), "__imp_%s", imp_sym);
+                                    size_t imp_name_len = strlen(imp_name);
+
+                                    ny_buf_grow((void **)&ctx->symbols, &ctx->symbol_capacity, ctx->symbol_count, sizeof(Nylink_Symbol));
+                                    uint32_t is_id = (uint32_t)ctx->symbol_count++;
+                                    Nylink_Symbol *nis = &ctx->symbols[is_id];
+                                    memset(nis, 0, sizeof(Nylink_Symbol));
+                                    nis->id = is_id;
+                                    nis->name = (char *)ny_alloc(imp_name_len + 1);
+                                    memcpy(nis->name, imp_name, imp_name_len + 1);
+                                    nis->binding = NYLINK_SYM_GLOBAL;
+                                    nis->is_defined = true;
+                                    nis->is_dynamic = true;
+                                    nis->is_function = false;
+                                    nis->sec_id = UINT32_MAX;
+                                    nis->obj_index = UINT32_MAX;
+                                } else {
+                                    if (!nylink_add_object(ctx, display_name, mdata, msize)) {
+                                        return false;
+                                    }
                                 }
 
                                 progress = true;
@@ -428,3 +534,4 @@ bool nylink_extract_needed_archive_members(Nylink_Context *ctx) {
 
     return true;
 }
+

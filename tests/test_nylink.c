@@ -1750,5 +1750,659 @@ void test_nylink_gotpcrel_relocation(void) {
     ny_obj_buf_destroy(&so_obj);
 }
 
+void test_nylink_pe_shared_emission(void) {
+    Ny_Object_Buffer obj;
+    ny_obj_buf_init(&obj);
+    emit_dummy_coff(&obj, "foo", false, nullptr);
 
+    Nylink_Context *ctx = nylink_context_create();
+    nylink_context_set_output_mode(ctx, NYLINK_OUTPUT_DLL);
+    nylink_add_export(ctx, "foo");
 
+    TEST_ASSERT(nylink_add_object(ctx, "foo.obj", obj.bytes, obj.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    const char *exports[] = { "foo" };
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .output_mode = NYLINK_OUTPUT_DLL,
+        .base_address = 0x180000000ULL,
+        .exports = exports,
+        .export_count = 1,
+    };
+
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+
+    const char *dll_path = "bin/test_dll.dll";
+    const char *lib_path = "bin/test_dll.lib";
+    TEST_ASSERT(nylink_write_executable(ctx, dll_path, &cfg));
+    TEST_ASSERT(nylink_write_pe_implib(ctx, lib_path, "test_dll.dll"));
+
+    FILE *f_dll = fopen(dll_path, "rb");
+    TEST_ASSERT(f_dll != nullptr);
+
+    Pe_Test_Dos_Header dos_hdr;
+    TEST_ASSERT_EQ(fread(&dos_hdr, sizeof(dos_hdr), 1, f_dll), 1);
+    fseek(f_dll, (long)dos_hdr.e_lfanew, SEEK_SET);
+
+    uint32_t pe_sig = 0;
+    TEST_ASSERT_EQ(fread(&pe_sig, 4, 1, f_dll), 1);
+    TEST_ASSERT_EQ(pe_sig, 0x00004550);
+
+    Pe_Test_File_Header fhdr;
+    TEST_ASSERT_EQ(fread(&fhdr, sizeof(fhdr), 1, f_dll), 1);
+    TEST_ASSERT(fhdr.Characteristics & 0x2000); /* IMAGE_FILE_DLL */
+
+    Pe_Test_Optional_Header64 opt;
+    TEST_ASSERT_EQ(fread(&opt, sizeof(opt), 1, f_dll), 1);
+    TEST_ASSERT(opt.DataDirectory[0].VirtualAddress != 0); /* Export Directory RVA */
+    TEST_ASSERT(opt.DataDirectory[0].Size > 0);
+
+    fclose(f_dll);
+    remove(dll_path);
+
+    /* Verify .lib is an archive and has 1st linker member */
+    FILE *f_lib = fopen(lib_path, "rb");
+    TEST_ASSERT(f_lib != nullptr);
+    char magic[8];
+    TEST_ASSERT_EQ(fread(magic, 1, 8, f_lib), 8);
+    TEST_ASSERT(memcmp(magic, "!<arch>\n", 8) == 0);
+    fclose(f_lib);
+    remove(lib_path);
+
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj);
+}
+
+void test_nylink_pe_import_resolution(void) {
+    /* 1. Build a dummy DLL with export 'ext_func' */
+    Ny_Object_Buffer obj_dll;
+    ny_obj_buf_init(&obj_dll);
+    emit_dummy_coff(&obj_dll, "ext_func", false, nullptr);
+
+    Nylink_Context *dll_ctx = nylink_context_create();
+    nylink_context_set_output_mode(dll_ctx, NYLINK_OUTPUT_DLL);
+    nylink_add_export(dll_ctx, "ext_func");
+    TEST_ASSERT(nylink_add_object(dll_ctx, "ext.obj", obj_dll.bytes, obj_dll.count));
+    TEST_ASSERT(nylink_resolve_symbols(dll_ctx));
+
+    const char *exports[] = { "ext_func" };
+    Nylink_Config dll_cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .output_mode = NYLINK_OUTPUT_DLL,
+        .exports = exports,
+        .export_count = 1,
+    };
+    TEST_ASSERT(nylink_layout(dll_ctx, &dll_cfg));
+    TEST_ASSERT(nylink_apply_relocations(dll_ctx));
+
+    const char *dll_path = "bin/test_ext.dll";
+    const char *lib_path = "bin/test_ext.lib";
+    TEST_ASSERT(nylink_write_executable(dll_ctx, dll_path, &dll_cfg));
+    TEST_ASSERT(nylink_write_pe_implib(dll_ctx, lib_path, "test_ext.dll"));
+    nylink_context_destroy(dll_ctx);
+    ny_obj_buf_destroy(&obj_dll);
+
+    /* 2. Load .lib into byte buffer */
+    FILE *fl = fopen(lib_path, "rb");
+    TEST_ASSERT(fl != nullptr);
+    fseek(fl, 0, SEEK_END);
+    long lsz = ftell(fl);
+    fseek(fl, 0, SEEK_SET);
+    uint8_t *lib_bytes = (uint8_t *)ny_alloc((size_t)lsz);
+    TEST_ASSERT_EQ(fread(lib_bytes, 1, (size_t)lsz, fl), (size_t)lsz);
+    fclose(fl);
+
+    /* 3. Build an exe referencing 'ext_func' via call */
+    Ny_Object_Buffer obj_exe;
+    ny_obj_buf_init(&obj_exe);
+    emit_dummy_coff(&obj_exe, "main", true, "ext_func");
+
+    Nylink_Context *exe_ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(exe_ctx, "main.obj", obj_exe.bytes, obj_exe.count));
+    TEST_ASSERT(nylink_add_archive(exe_ctx, "test_ext.lib", lib_bytes, (size_t)lsz));
+
+    TEST_ASSERT(nylink_resolve_symbols(exe_ctx));
+    TEST_ASSERT(!nylink_has_errors(exe_ctx));
+
+    Nylink_Config exe_cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .output_mode = NYLINK_OUTPUT_EXECUTABLE,
+        .base_address = 0x140000000ULL,
+        .entry_point = "main",
+    };
+    TEST_ASSERT(nylink_layout(exe_ctx, &exe_cfg));
+    TEST_ASSERT(nylink_apply_relocations(exe_ctx));
+
+    const char *exe_path = "bin/test_pe_import_app.exe";
+    TEST_ASSERT(nylink_write_executable(exe_ctx, exe_path, &exe_cfg));
+    TEST_ASSERT(!nylink_has_errors(exe_ctx));
+
+    /* 4. Validate exe headers: import directory and IAT directory */
+    FILE *fe = fopen(exe_path, "rb");
+    TEST_ASSERT(fe != nullptr);
+
+    Pe_Test_Dos_Header dos_hdr;
+    TEST_ASSERT_EQ(fread(&dos_hdr, sizeof(dos_hdr), 1, fe), 1);
+    fseek(fe, (long)dos_hdr.e_lfanew + 4 + sizeof(Pe_Test_File_Header), SEEK_SET);
+
+    Pe_Test_Optional_Header64 opt;
+    TEST_ASSERT_EQ(fread(&opt, sizeof(opt), 1, fe), 1);
+    TEST_ASSERT(opt.DataDirectory[1].VirtualAddress != 0); /* Import Directory */
+    TEST_ASSERT(opt.DataDirectory[1].Size > 0);
+    TEST_ASSERT(opt.DataDirectory[12].VirtualAddress != 0); /* IAT Directory */
+    TEST_ASSERT(opt.DataDirectory[12].Size > 0);
+
+    fclose(fe);
+    remove(exe_path);
+    remove(dll_path);
+    remove(lib_path);
+    ny_free(lib_bytes, (size_t)lsz);
+
+    nylink_context_destroy(exe_ctx);
+    ny_obj_buf_destroy(&obj_exe);
+}
+
+void test_nylink_pe_dll_structural_validation(void) {
+    Ny_Object_Buffer obj;
+    ny_obj_buf_init(&obj);
+    emit_dummy_coff(&obj, "exp_fn_a", false, nullptr);
+
+    Nylink_Context *ctx = nylink_context_create();
+    nylink_context_set_output_mode(ctx, NYLINK_OUTPUT_DLL);
+    nylink_add_export(ctx, "exp_fn_a");
+    TEST_ASSERT(nylink_add_object(ctx, "e.obj", obj.bytes, obj.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    const char *exports[] = { "exp_fn_a" };
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .output_mode = NYLINK_OUTPUT_DLL,
+        .base_address = 0x10000000ULL,
+        .soname = "struct.dll",
+        .exports = exports,
+        .export_count = 1,
+    };
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+
+    const char *dll_path = "bin/test_pe_struct.dll";
+    const char *lib_path = "bin/test_pe_struct.lib";
+    TEST_ASSERT(nylink_write_executable(ctx, dll_path, &cfg));
+    TEST_ASSERT(nylink_write_pe_implib(ctx, lib_path, "test_pe_struct.dll"));
+    TEST_ASSERT(!nylink_has_errors(ctx));
+
+    FILE *f = fopen(dll_path, "rb");
+    TEST_ASSERT(f != nullptr);
+
+    Pe_Test_Dos_Header dos;
+    TEST_ASSERT_EQ(fread(&dos, sizeof(dos), 1, f), 1);
+    TEST_ASSERT_EQ(dos.e_magic, 0x5A4D);
+    TEST_ASSERT_EQ(dos.e_lfanew, 0x80);
+
+    fseek(f, 0x80, SEEK_SET);
+    uint32_t sig = 0;
+    TEST_ASSERT_EQ(fread(&sig, 4, 1, f), 1);
+    TEST_ASSERT_EQ(sig, 0x00004550);
+
+    Pe_Test_File_Header fh;
+    TEST_ASSERT_EQ(fread(&fh, sizeof(fh), 1, f), 1);
+    TEST_ASSERT_EQ(fh.Machine, 0x8664);
+    TEST_ASSERT(fh.Characteristics & 0x2000);
+
+    Pe_Test_Optional_Header64 oh;
+    TEST_ASSERT_EQ(fread(&oh, sizeof(oh), 1, f), 1);
+    TEST_ASSERT_EQ(oh.Magic, 0x20B);
+    TEST_ASSERT_EQ(oh.ImageBase, 0x10000000ULL);
+    TEST_ASSERT_EQ(oh.SectionAlignment, 0x1000);
+    TEST_ASSERT_EQ(oh.FileAlignment, 0x200);
+    TEST_ASSERT(oh.SizeOfImage >= 0x2000);
+    TEST_ASSERT_EQ(oh.SizeOfHeaders, 0x400);
+    TEST_ASSERT(oh.DataDirectory[0].VirtualAddress != 0);
+    TEST_ASSERT(oh.DataDirectory[0].Size > 0);
+
+    uint16_t nsec = fh.NumberOfSections;
+    Pe_Test_Section_Header *shdrs = (Pe_Test_Section_Header *)ny_alloc_zero(nsec * sizeof(Pe_Test_Section_Header));
+    TEST_ASSERT_EQ(fread(shdrs, sizeof(Pe_Test_Section_Header), nsec, f), nsec);
+
+    bool has_text = false;
+    bool has_rdata = false;
+    for (uint16_t i = 0; i < nsec; i++) {
+        if (strncmp((const char *)shdrs[i].Name, ".text", 5) == 0) {
+            has_text = true;
+            TEST_ASSERT(shdrs[i].Characteristics & 0x20000000);
+            TEST_ASSERT(shdrs[i].Characteristics & 0x40000000);
+        }
+        if (strncmp((const char *)shdrs[i].Name, ".rdata", 6) == 0) {
+            has_rdata = true;
+            TEST_ASSERT(shdrs[i].Characteristics & 0x40000000);
+        }
+    }
+    TEST_ASSERT(has_text);
+    TEST_ASSERT(has_rdata);
+
+    uint32_t exp_rva = oh.DataDirectory[0].VirtualAddress;
+    uint32_t exp_size = oh.DataDirectory[0].Size;
+    TEST_ASSERT(exp_size >= 40);
+
+    long exp_file_off = 0;
+    for (uint16_t i = 0; i < nsec; i++) {
+        if (exp_rva >= shdrs[i].VirtualAddress && exp_rva < shdrs[i].VirtualAddress + shdrs[i].VirtualSize) {
+            exp_file_off = (long)(shdrs[i].PointerToRawData + (exp_rva - shdrs[i].VirtualAddress));
+            break;
+        }
+    }
+    TEST_ASSERT(exp_file_off > 0);
+
+    fseek(f, exp_file_off, SEEK_SET);
+    uint8_t *exp_dir = (uint8_t *)ny_alloc_zero(exp_size);
+    TEST_ASSERT_EQ(fread(exp_dir, 1, exp_size, f), exp_size);
+
+    uint32_t num_funcs = *(uint32_t *)(exp_dir + 20);
+    uint32_t num_names = *(uint32_t *)(exp_dir + 24);
+    uint32_t eat_rva = *(uint32_t *)(exp_dir + 28);
+    uint32_t npt_rva = *(uint32_t *)(exp_dir + 32);
+    uint32_t ot_rva = *(uint32_t *)(exp_dir + 36);
+    uint32_t name_rva = *(uint32_t *)(exp_dir + 12);
+    uint32_t ord_base = *(uint32_t *)(exp_dir + 16);
+
+    TEST_ASSERT_EQ(num_funcs, 1);
+    TEST_ASSERT_EQ(num_names, 1);
+    TEST_ASSERT_EQ(ord_base, 1);
+
+    uint32_t exp_name_off = name_rva - exp_rva;
+    TEST_ASSERT(exp_name_off < exp_size);
+    TEST_ASSERT_STR_EQ((const char *)(exp_dir + exp_name_off), "struct.dll");
+
+    uint32_t npt_off = npt_rva - exp_rva;
+    TEST_ASSERT(npt_off + 4 <= exp_size);
+    uint32_t sym_name_rva = *(uint32_t *)(exp_dir + npt_off);
+    uint32_t sym_name_off = sym_name_rva - exp_rva;
+    TEST_ASSERT(sym_name_off < exp_size);
+    TEST_ASSERT_STR_EQ((const char *)(exp_dir + sym_name_off), "exp_fn_a");
+
+    uint32_t ot_off = ot_rva - exp_rva;
+    TEST_ASSERT(ot_off + 2 <= exp_size);
+    uint16_t ordinal = *(uint16_t *)(exp_dir + ot_off);
+    TEST_ASSERT_EQ(ordinal, 0);
+
+    uint32_t eat_off = eat_rva - exp_rva;
+    TEST_ASSERT(eat_off + 4 <= exp_size);
+    uint32_t func_rva = *(uint32_t *)(exp_dir + eat_off);
+    TEST_ASSERT(func_rva >= 0x1000);
+    TEST_ASSERT(func_rva < oh.SizeOfImage);
+
+    ny_free(exp_dir, exp_size);
+
+    fclose(f);
+    remove(dll_path);
+    remove(lib_path);
+    ny_free(shdrs, nsec * sizeof(Pe_Test_Section_Header));
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj);
+}
+
+void test_nylink_pe_import_structural_validation(void) {
+    Ny_Object_Buffer obj_dll;
+    ny_obj_buf_init(&obj_dll);
+    emit_dummy_coff(&obj_dll, "imp_target", false, nullptr);
+
+    Nylink_Context *dll_ctx = nylink_context_create();
+    nylink_context_set_output_mode(dll_ctx, NYLINK_OUTPUT_DLL);
+    nylink_add_export(dll_ctx, "imp_target");
+    TEST_ASSERT(nylink_add_object(dll_ctx, "d.obj", obj_dll.bytes, obj_dll.count));
+    TEST_ASSERT(nylink_resolve_symbols(dll_ctx));
+
+    const char *exports[] = { "imp_target" };
+    Nylink_Config dll_cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .output_mode = NYLINK_OUTPUT_DLL,
+        .soname = "imp.dll",
+        .exports = exports,
+        .export_count = 1,
+    };
+    TEST_ASSERT(nylink_layout(dll_ctx, &dll_cfg));
+    TEST_ASSERT(nylink_apply_relocations(dll_ctx));
+
+    const char *dll_path = "bin/test_imp_str.dll";
+    const char *lib_path = "bin/test_imp_str.lib";
+    TEST_ASSERT(nylink_write_executable(dll_ctx, dll_path, &dll_cfg));
+    TEST_ASSERT(nylink_write_pe_implib(dll_ctx, lib_path, "test_imp_str.dll"));
+    nylink_context_destroy(dll_ctx);
+    ny_obj_buf_destroy(&obj_dll);
+
+    FILE *fl = fopen(lib_path, "rb");
+    TEST_ASSERT(fl != nullptr);
+    fseek(fl, 0, SEEK_END);
+    long lsz = ftell(fl);
+    fseek(fl, 0, SEEK_SET);
+    uint8_t *lib_bytes = (uint8_t *)ny_alloc((size_t)lsz);
+    TEST_ASSERT_EQ(fread(lib_bytes, 1, (size_t)lsz, fl), (size_t)lsz);
+    fclose(fl);
+
+    Ny_Object_Buffer obj_exe;
+    ny_obj_buf_init(&obj_exe);
+    emit_dummy_coff(&obj_exe, "main", true, "imp_target");
+
+    Nylink_Context *exe_ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(exe_ctx, "m.obj", obj_exe.bytes, obj_exe.count));
+    TEST_ASSERT(nylink_add_archive(exe_ctx, "i.lib", lib_bytes, (size_t)lsz));
+    TEST_ASSERT(nylink_resolve_symbols(exe_ctx));
+
+    Nylink_Config exe_cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .output_mode = NYLINK_OUTPUT_EXECUTABLE,
+        .base_address = 0x140000000ULL,
+        .entry_point = "main",
+    };
+    TEST_ASSERT(nylink_layout(exe_ctx, &exe_cfg));
+    TEST_ASSERT(nylink_apply_relocations(exe_ctx));
+
+    const char *exe_path = "bin/test_imp_str.exe";
+    TEST_ASSERT(nylink_write_executable(exe_ctx, exe_path, &exe_cfg));
+
+    FILE *f = fopen(exe_path, "rb");
+    TEST_ASSERT(f != nullptr);
+
+    Pe_Test_Dos_Header dos;
+    TEST_ASSERT_EQ(fread(&dos, sizeof(dos), 1, f), 1);
+    fseek(f, (long)dos.e_lfanew + 4, SEEK_SET);
+
+    Pe_Test_File_Header fh;
+    TEST_ASSERT_EQ(fread(&fh, sizeof(fh), 1, f), 1);
+    TEST_ASSERT(!(fh.Characteristics & 0x2000));
+
+    Pe_Test_Optional_Header64 oh;
+    TEST_ASSERT_EQ(fread(&oh, sizeof(oh), 1, f), 1);
+    TEST_ASSERT(oh.DataDirectory[1].VirtualAddress != 0);
+    TEST_ASSERT(oh.DataDirectory[1].Size > 0);
+    TEST_ASSERT(oh.DataDirectory[12].VirtualAddress != 0);
+    TEST_ASSERT(oh.DataDirectory[12].Size > 0);
+    TEST_ASSERT(oh.AddressOfEntryPoint >= 0x1000);
+
+    uint16_t nsec = fh.NumberOfSections;
+    Pe_Test_Section_Header *shdrs = (Pe_Test_Section_Header *)ny_alloc_zero(nsec * sizeof(Pe_Test_Section_Header));
+    TEST_ASSERT_EQ(fread(shdrs, sizeof(Pe_Test_Section_Header), nsec, f), nsec);
+
+    uint32_t imp_rva = oh.DataDirectory[1].VirtualAddress;
+    uint32_t iat_rva = oh.DataDirectory[12].VirtualAddress;
+    uint32_t iat_size = oh.DataDirectory[12].Size;
+
+    long imp_file_off = 0;
+    long iat_file_off = 0;
+    for (uint16_t i = 0; i < nsec; i++) {
+        if (imp_rva >= shdrs[i].VirtualAddress && imp_rva < shdrs[i].VirtualAddress + shdrs[i].VirtualSize) {
+            imp_file_off = (long)(shdrs[i].PointerToRawData + (imp_rva - shdrs[i].VirtualAddress));
+        }
+        if (iat_rva >= shdrs[i].VirtualAddress && iat_rva < shdrs[i].VirtualAddress + shdrs[i].VirtualSize) {
+            iat_file_off = (long)(shdrs[i].PointerToRawData + (iat_rva - shdrs[i].VirtualAddress));
+        }
+    }
+    TEST_ASSERT(imp_file_off > 0);
+    TEST_ASSERT(iat_file_off > 0);
+
+    fseek(f, imp_file_off, SEEK_SET);
+    uint8_t idt[20];
+    TEST_ASSERT_EQ(fread(idt, 1, 20, f), 20);
+    uint32_t ilt_rva = *(uint32_t *)(idt + 0);
+    uint32_t dll_name_rva = *(uint32_t *)(idt + 12);
+    uint32_t first_thunk_rva = *(uint32_t *)(idt + 16);
+    TEST_ASSERT(ilt_rva != 0);
+    TEST_ASSERT(dll_name_rva != 0);
+    TEST_ASSERT(first_thunk_rva != 0);
+    TEST_ASSERT_EQ(first_thunk_rva, iat_rva);
+
+    long dll_name_off = 0;
+    for (uint16_t i = 0; i < nsec; i++) {
+        if (dll_name_rva >= shdrs[i].VirtualAddress && dll_name_rva < shdrs[i].VirtualAddress + shdrs[i].VirtualSize) {
+            dll_name_off = (long)(shdrs[i].PointerToRawData + (dll_name_rva - shdrs[i].VirtualAddress));
+            break;
+        }
+    }
+    TEST_ASSERT(dll_name_off > 0);
+    fseek(f, dll_name_off, SEEK_SET);
+    char dll_name_buf[256] = {0};
+    size_t dn_len = 0;
+    int c;
+    while (dn_len < 255 && (c = fgetc(f)) != EOF && c != 0) {
+        dll_name_buf[dn_len++] = (char)c;
+    }
+    dll_name_buf[dn_len] = '\0';
+    TEST_ASSERT_STR_EQ(dll_name_buf, "test_imp_str.dll");
+
+    fseek(f, iat_file_off, SEEK_SET);
+    uint64_t iat_entry = 0;
+    TEST_ASSERT_EQ(fread(&iat_entry, 8, 1, f), 1);
+    TEST_ASSERT(iat_entry != 0);
+    TEST_ASSERT(iat_size >= 16);
+
+    ny_free(shdrs, nsec * sizeof(Pe_Test_Section_Header));
+    fclose(f);
+    remove(exe_path);
+    remove(dll_path);
+    remove(lib_path);
+    ny_free(lib_bytes, (size_t)lsz);
+    nylink_context_destroy(exe_ctx);
+    ny_obj_buf_destroy(&obj_exe);
+}
+
+void test_nylink_pe_base_reloc_validation(void) {
+    Ny_Object_Buffer obj_main, obj_data;
+    ny_obj_buf_init(&obj_main);
+    ny_obj_buf_init(&obj_data);
+
+    X86_Encoded_Module emod_data;
+    x86_encoded_mod_init(&emod_data, ny_str("reloc_data"));
+    uint32_t val = 99;
+    x86_buf_append_bytes(&emod_data.data_section, (const uint8_t *)&val, sizeof(val));
+    ny_buf_grow((void **)&emod_data.globals, &emod_data.global_capacity, 1, sizeof(X86_Encoded_Global));
+    emod_data.globals[emod_data.global_count++] = (X86_Encoded_Global){
+        .name = ny_str("reloc_var"),
+        .kind = NY_GLOBAL_DATA,
+        .offset = 0,
+        .size = sizeof(val),
+        .align = 4,
+    };
+    Ny_Diagnostic_List diags;
+    ny_diagnostic_list_init(&diags);
+    TEST_ASSERT(ny_emit_coff_x86_64(&obj_data, &emod_data, &diags));
+    ny_diagnostic_list_destroy(&diags);
+    x86_encoded_mod_destroy(&emod_data);
+
+    X86_Encoded_Module emod_main;
+    x86_encoded_mod_init(&emod_main, ny_str("reloc_main"));
+    /* mov rax, <abs64 addr of reloc_var>; mov eax, [rax]; ret
+       Uses 10-byte mov rax, imm64 with ADDR64 reloc at offset 2 */
+    const uint8_t code[] = {
+        0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0,
+        0x8b, 0x00,
+        0xc3
+    };
+    x86_buf_append_bytes(&emod_main.text_section, code, sizeof(code));
+    ny_buf_grow((void **)&emod_main.functions, &emod_main.function_capacity, 1, sizeof(X86_Function_Code));
+    emod_main.functions[emod_main.function_count++] = (X86_Function_Code){
+        .name = ny_str("main"),
+        .offset = 0,
+        .size = sizeof(code),
+    };
+    X86_Relocation reloc = {
+        .kind = X86_FIXUP_GLOBAL_REL32,
+        .code_offset = 2,
+        .symbol_name = ny_str("reloc_var"),
+        .addend = 0,
+    };
+    x86_buf_append_reloc(&emod_main.text_section, reloc);
+    ny_diagnostic_list_init(&diags);
+    TEST_ASSERT(ny_emit_coff_x86_64(&obj_main, &emod_main, &diags));
+    ny_diagnostic_list_destroy(&diags);
+    x86_encoded_mod_destroy(&emod_main);
+
+    /* Patch the COFF relocation type from REL32 (4) to ADDR64 (1) and
+       fix the instruction to 10-byte mov rax, imm64 (already correct) */
+    {
+        uint8_t *raw = obj_main.bytes;
+        uint16_t nsec = *(uint16_t *)(raw + 2);
+        uint16_t optsize = *(uint16_t *)(raw + 16);
+        size_t shdr_off = 20 + optsize;
+        for (uint16_t s = 0; s < nsec; s++) {
+            uint8_t *sh = raw + shdr_off + (size_t)s * 40;
+            uint16_t nreloc = *(uint16_t *)(sh + 32);
+            uint32_t reloc_off = *(uint32_t *)(sh + 24);
+            if (nreloc == 0 || reloc_off == 0) continue;
+            for (uint16_t r = 0; r < nreloc; r++) {
+                uint8_t *rel = raw + reloc_off + (size_t)r * 10;
+                uint16_t type = *(uint16_t *)(rel + 8);
+                if (type == 4) {
+                    *(uint16_t *)(rel + 8) = 1; /* IMAGE_REL_AMD64_ADDR64 */
+                }
+            }
+        }
+    }
+
+    Nylink_Context *ctx = nylink_context_create();
+    TEST_ASSERT(nylink_add_object(ctx, "main.obj", obj_main.bytes, obj_main.count));
+    TEST_ASSERT(nylink_add_object(ctx, "data.obj", obj_data.bytes, obj_data.count));
+    TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+    Nylink_Config cfg = {
+        .target_format = NYLINK_TARGET_PE,
+        .output_mode = NYLINK_OUTPUT_EXECUTABLE,
+        .base_address = 0x140000000ULL,
+        .entry_point = "main",
+    };
+    TEST_ASSERT(nylink_layout(ctx, &cfg));
+    TEST_ASSERT(nylink_apply_relocations(ctx));
+
+    const char *exe_path = "bin/test_pe_reloc.exe";
+    TEST_ASSERT(nylink_write_executable(ctx, exe_path, &cfg));
+
+    FILE *f = fopen(exe_path, "rb");
+    TEST_ASSERT(f != nullptr);
+    Pe_Test_Dos_Header dos;
+    TEST_ASSERT_EQ(fread(&dos, sizeof(dos), 1, f), 1);
+    fseek(f, (long)dos.e_lfanew + 4, SEEK_SET);
+    Pe_Test_File_Header fh;
+    TEST_ASSERT_EQ(fread(&fh, sizeof(fh), 1, f), 1);
+    Pe_Test_Optional_Header64 oh;
+    TEST_ASSERT_EQ(fread(&oh, sizeof(oh), 1, f), 1);
+
+    bool found_dir64 = false;
+    if (oh.DataDirectory[5].VirtualAddress != 0 && oh.DataDirectory[5].Size > 0) {
+        uint16_t nsec = fh.NumberOfSections;
+        Pe_Test_Section_Header *shdrs = (Pe_Test_Section_Header *)ny_alloc_zero(nsec * sizeof(Pe_Test_Section_Header));
+        TEST_ASSERT_EQ(fread(shdrs, sizeof(Pe_Test_Section_Header), nsec, f), nsec);
+
+        uint32_t reloc_rva = oh.DataDirectory[5].VirtualAddress;
+        uint32_t reloc_size = oh.DataDirectory[5].Size;
+        long reloc_off = 0;
+        for (uint16_t i = 0; i < nsec; i++) {
+            if (reloc_rva >= shdrs[i].VirtualAddress && reloc_rva < shdrs[i].VirtualAddress + shdrs[i].VirtualSize) {
+                reloc_off = (long)(shdrs[i].PointerToRawData + (reloc_rva - shdrs[i].VirtualAddress));
+                break;
+            }
+        }
+        TEST_ASSERT(reloc_off > 0);
+
+        fseek(f, reloc_off, SEEK_SET);
+        uint8_t *reloc_data = (uint8_t *)ny_alloc_zero(reloc_size);
+        TEST_ASSERT_EQ(fread(reloc_data, 1, reloc_size, f), reloc_size);
+
+        size_t pos = 0;
+        while (pos + 8 <= reloc_size) {
+            uint32_t block_size = *(uint32_t *)(reloc_data + pos + 4);
+            if (block_size == 0 || block_size < 8) break;
+            size_t entries = (block_size - 8) / 2;
+            for (size_t e = 0; e < entries; e++) {
+                uint16_t entry = *(uint16_t *)(reloc_data + pos + 8 + e * 2);
+                uint16_t type = (entry >> 12) & 0xF;
+                if (type == 10) {
+                    found_dir64 = true;
+                }
+            }
+            pos += block_size;
+        }
+        ny_free(reloc_data, reloc_size);
+        ny_free(shdrs, nsec * sizeof(Pe_Test_Section_Header));
+    }
+    TEST_ASSERT(found_dir64);
+
+    fclose(f);
+    remove(exe_path);
+    nylink_context_destroy(ctx);
+    ny_obj_buf_destroy(&obj_data);
+    ny_obj_buf_destroy(&obj_main);
+}
+
+void test_nylink_pe_negative_tests(void) {
+    {
+        Ny_Object_Buffer obj;
+        ny_obj_buf_init(&obj);
+        emit_dummy_coff(&obj, "dup_fn", false, nullptr);
+
+        Nylink_Context *ctx = nylink_context_create();
+        nylink_context_set_output_mode(ctx, NYLINK_OUTPUT_DLL);
+        nylink_add_export(ctx, "dup_fn");
+        nylink_add_export(ctx, "dup_fn");
+        TEST_ASSERT(nylink_add_object(ctx, "d.obj", obj.bytes, obj.count));
+        TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+        TEST_ASSERT(nylink_add_export(ctx, "dup_fn"));
+
+        nylink_context_destroy(ctx);
+        ny_obj_buf_destroy(&obj);
+    }
+
+    {
+        Nylink_Context *ctx = nylink_context_create();
+        uint8_t bad_lib[68];
+        memcpy(bad_lib, "!<arch>\n", 8);
+        memset(bad_lib + 8, ' ', 60);
+        memcpy(bad_lib + 8 + 48, "0         ", 10);
+        bad_lib[8 + 58] = 'X';
+        bad_lib[8 + 59] = 'Y';
+        TEST_ASSERT(!nylink_add_archive(ctx, "bad.lib", bad_lib, sizeof(bad_lib)));
+        TEST_ASSERT(nylink_has_errors(ctx));
+        nylink_context_destroy(ctx);
+    }
+
+    {
+        Ny_Object_Buffer obj;
+        ny_obj_buf_init(&obj);
+        emit_dummy_coff(&obj, "orphan", false, nullptr);
+
+        Nylink_Context *ctx = nylink_context_create();
+        nylink_context_set_output_mode(ctx, NYLINK_OUTPUT_DLL);
+        nylink_add_export(ctx, "nonexistent_symbol");
+        TEST_ASSERT(nylink_add_object(ctx, "o.obj", obj.bytes, obj.count));
+        TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+        const char *exports[] = { "nonexistent_symbol" };
+        Nylink_Config cfg = {
+            .target_format = NYLINK_TARGET_PE,
+            .output_mode = NYLINK_OUTPUT_DLL,
+            .exports = exports,
+            .export_count = 1,
+        };
+        TEST_ASSERT(nylink_layout(ctx, &cfg));
+        TEST_ASSERT(nylink_apply_relocations(ctx));
+
+        const char *dll_path = "bin/test_neg_orphan.dll";
+        TEST_ASSERT(nylink_write_executable(ctx, dll_path, &cfg));
+
+        FILE *f = fopen(dll_path, "rb");
+        TEST_ASSERT(f != nullptr);
+        Pe_Test_Dos_Header dos;
+        TEST_ASSERT_EQ(fread(&dos, sizeof(dos), 1, f), 1);
+        fseek(f, (long)dos.e_lfanew + 4 + sizeof(Pe_Test_File_Header), SEEK_SET);
+        Pe_Test_Optional_Header64 oh;
+        TEST_ASSERT_EQ(fread(&oh, sizeof(oh), 1, f), 1);
+        TEST_ASSERT(oh.DataDirectory[0].VirtualAddress != 0);
+        TEST_ASSERT(oh.DataDirectory[0].Size >= 40);
+
+        fclose(f);
+        remove(dll_path);
+        nylink_context_destroy(ctx);
+        ny_obj_buf_destroy(&obj);
+    }
+}

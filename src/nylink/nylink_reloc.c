@@ -184,6 +184,8 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
         const char *sym_name = sym->name ? sym->name : "<unnamed>";
 
         if (reloc->type == NYLINK_RELOC_X86_64_64) {
+            if (sym->is_pe_refptr_redirect) continue;
+
             if (target_sec_offset + 8 > out_sec->data_capacity || target_sec_offset + 8 > out_sec->file_size) {
                 nylink_diag_add(ctx, "relocation write out of bounds", in_sec->name, sym_name);
                 success = false;
@@ -211,6 +213,11 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
                         success = false;
                         continue;
                     }
+                } else if (ctx->target_format == NYLINK_TARGET_PE) {
+                    /* Base relocation RVA: place_va - image_base */
+                    uint32_t fixup_rva = (uint32_t)(place_va - ctx->image_base);
+                    ny_buf_grow((void **)&ctx->pe_base_relocs, &ctx->pe_base_reloc_capacity, ctx->pe_base_reloc_count, sizeof(uint32_t));
+                    ctx->pe_base_relocs[ctx->pe_base_reloc_count++] = fixup_rva;
                 }
             }
             write_word64(out_sec->data + target_sec_offset, val);
@@ -227,6 +234,9 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
             } else if (plan == NYLINK_PLAN_GOT_LOAD) {
                 target_va = ctx->got_va + (uint64_t)slot * 8;
             } else if (state->is_defined && !state->is_dynamic) {
+                target_va = state->final_va;
+            } else if (state->is_dynamic && state->final_va != 0) {
+                /* PE import thunk: layout pre-assigned a thunk VA; resolve statically */
                 target_va = state->final_va;
             } else if (!state->is_defined && sym->binding == NYLINK_SYM_WEAK) {
                 target_va = 0;

@@ -15,6 +15,7 @@ typedef enum Nylink_Format {
     NYLINK_FORMAT_UNKNOWN = 0,
     NYLINK_FORMAT_ELF64,
     NYLINK_FORMAT_COFF,
+    NYLINK_FORMAT_PE_IMPORT_LIB,
 } Nylink_Format;
 
 typedef enum Nylink_Sec_Kind {
@@ -69,6 +70,7 @@ typedef struct Nylink_Symbol {
     bool is_dynamic;   /* symbol provided by an imported shared library */
     bool is_function;  /* symbol is STT_FUNC */
     bool is_object;    /* symbol is STT_OBJECT */
+    bool is_pe_refptr_redirect; /* .refptr.<name> redirected to IAT slot */
 } Nylink_Symbol;
 
 typedef struct Nylink_Relocation {
@@ -88,6 +90,7 @@ typedef enum Nylink_Output_Mode {
     NYLINK_OUTPUT_EXECUTABLE = 0,
     NYLINK_OUTPUT_PIE,
     NYLINK_OUTPUT_SHARED,
+    NYLINK_OUTPUT_DLL,
 } Nylink_Output_Mode;
 
 typedef struct Nylink_Config {
@@ -100,6 +103,9 @@ typedef struct Nylink_Config {
     const char *rpath;
     const char *const *needed_libs;
     size_t needed_lib_count;
+    const char *const *exports;
+    size_t export_count;
+    const char *implib_path;
 } Nylink_Config;
 
 typedef struct Nylink_Context Nylink_Context;
@@ -108,6 +114,7 @@ Nylink_Context *nylink_context_create(void);
 void nylink_context_destroy(Nylink_Context *ctx);
 void nylink_context_set_shared(Nylink_Context *ctx, bool is_shared);
 void nylink_context_set_output_mode(Nylink_Context *ctx, Nylink_Output_Mode mode);
+bool nylink_add_export(Nylink_Context *ctx, const char *symbol_name);
 
 bool nylink_add_object(Nylink_Context *ctx, const char *name, const uint8_t *data, size_t size);
 bool nylink_add_archive(Nylink_Context *ctx, const char *name, const uint8_t *data, size_t size);
@@ -115,6 +122,7 @@ bool nylink_resolve_symbols(Nylink_Context *ctx);
 bool nylink_layout(Nylink_Context *ctx, const Nylink_Config *cfg);
 bool nylink_apply_relocations(Nylink_Context *ctx);
 bool nylink_write_executable(Nylink_Context *ctx, const char *out_path, const Nylink_Config *cfg);
+bool nylink_write_pe_implib(Nylink_Context *ctx, const char *out_lib_path, const char *dll_name);
 
 size_t nylink_get_object_count(const Nylink_Context *ctx);
 const char *nylink_get_object_name(const Nylink_Context *ctx, size_t index);

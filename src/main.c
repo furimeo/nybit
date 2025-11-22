@@ -125,6 +125,10 @@ static int do_cli_link(int argc, char **argv) {
     const char **needed_libs = nullptr;
     size_t needed_lib_count = 0;
     size_t needed_lib_capacity = 0;
+    const char **exports = nullptr;
+    size_t export_count = 0;
+    size_t export_capacity = 0;
+    const char *implib_path = nullptr;
 
     const char **search_dirs = nullptr;
     size_t search_dir_count = 0;
@@ -165,6 +169,18 @@ static int do_cli_link(int argc, char **argv) {
             rpath = arg + 7;
         } else if (strcmp(arg, "-rpath") == 0 && i + 1 < argc) {
             rpath = argv[++i];
+        } else if (strncmp(arg, "--export=", 9) == 0) {
+            const char *sym = arg + 9;
+            ny_buf_grow((void **)&exports, &export_capacity, export_count, sizeof(const char *));
+            exports[export_count++] = sym;
+        } else if (strcmp(arg, "--export") == 0 && i + 1 < argc) {
+            const char *sym = argv[++i];
+            ny_buf_grow((void **)&exports, &export_capacity, export_count, sizeof(const char *));
+            exports[export_count++] = sym;
+        } else if (strncmp(arg, "--implib=", 9) == 0) {
+            implib_path = arg + 9;
+        } else if (strcmp(arg, "--implib") == 0 && i + 1 < argc) {
+            implib_path = argv[++i];
         } else if (strncmp(arg, "--needed=", 9) == 0) {
             const char *lib = arg + 9;
             ny_buf_grow((void **)&needed_libs, &needed_lib_capacity, needed_lib_count, sizeof(const char *));
@@ -217,6 +233,7 @@ static int do_cli_link(int argc, char **argv) {
             if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
             if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
             if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
+            if (exports) ny_free(exports, export_capacity * sizeof(const char *));
             return 1;
         } else {
             ny_buf_grow((void **)&inputs, &input_capacity, input_count, sizeof(Link_Input));
@@ -233,6 +250,7 @@ static int do_cli_link(int argc, char **argv) {
         if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
         if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
         if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
+        if (exports) ny_free(exports, export_capacity * sizeof(const char *));
         return 1;
     }
 
@@ -256,32 +274,40 @@ static int do_cli_link(int argc, char **argv) {
             if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
             if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
             if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
+            if (exports) ny_free(exports, export_capacity * sizeof(const char *));
             return 1;
         }
     }
 
-    if ((is_shared || is_pie) && target_format == NYLINK_TARGET_PE) {
-        fprintf(stderr, "error: %s is not supported for PE target\n", is_shared ? "--shared" : "--pie");
+    if (is_pie && target_format == NYLINK_TARGET_PE) {
+        fprintf(stderr, "error: --pie is not supported for PE target\n");
         for (size_t k = 0; k < input_count; k++) {
             ny_free(inputs[k].path, strlen(inputs[k].path) + 1);
         }
         if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
         if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
         if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
+        if (exports) ny_free(exports, export_capacity * sizeof(const char *));
         return 1;
     }
 
     if (!output_file) {
         if (is_shared) {
-            output_file = "liba.so";
+            output_file = (target_format == NYLINK_TARGET_PE) ? "a.dll" : "liba.so";
         } else {
             output_file = (target_format == NYLINK_TARGET_PE) ? "a.exe" : "a.out";
         }
     }
 
+    if (is_shared && target_format == NYLINK_TARGET_PE && !soname) {
+        const char *base = strrchr(output_file, '/');
+        if (!base) base = strrchr(output_file, '\\');
+        soname = base ? base + 1 : output_file;
+    }
+
     uint64_t base_address = 0;
     if (target_format == NYLINK_TARGET_PE) {
-        base_address = 0x140000000ULL;
+        base_address = is_shared ? 0x180000000ULL : 0x140000000ULL;
     } else {
         base_address = (is_shared || is_pie) ? 0x0ULL : 0x400000ULL;
     }
@@ -295,6 +321,7 @@ static int do_cli_link(int argc, char **argv) {
             if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
             if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
             if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
+            if (exports) ny_free(exports, export_capacity * sizeof(const char *));
             return 1;
         }
     }
@@ -372,11 +399,18 @@ static int do_cli_link(int argc, char **argv) {
     if (!load_ok || nylink_has_errors(ctx)) {
         exit_code = 1;
     } else {
+        Nylink_Output_Mode out_mode = NYLINK_OUTPUT_EXECUTABLE;
         if (is_pie) {
-            nylink_context_set_output_mode(ctx, NYLINK_OUTPUT_PIE);
+            out_mode = NYLINK_OUTPUT_PIE;
         } else if (is_shared) {
-            nylink_context_set_output_mode(ctx, NYLINK_OUTPUT_SHARED);
+            out_mode = (target_format == NYLINK_TARGET_PE) ? NYLINK_OUTPUT_DLL : NYLINK_OUTPUT_SHARED;
         }
+        nylink_context_set_output_mode(ctx, out_mode);
+
+        for (size_t e = 0; e < export_count; e++) {
+            nylink_add_export(ctx, exports[e]);
+        }
+
         if (!nylink_resolve_symbols(ctx)) {
             exit_code = 1;
         } else {
@@ -393,13 +427,6 @@ static int do_cli_link(int argc, char **argv) {
                 }
             }
 
-            Nylink_Output_Mode out_mode = NYLINK_OUTPUT_EXECUTABLE;
-            if (is_pie) {
-                out_mode = NYLINK_OUTPUT_PIE;
-            } else if (is_shared) {
-                out_mode = NYLINK_OUTPUT_SHARED;
-            }
-
             Nylink_Config cfg = {
                 .target_format = target_format,
                 .output_mode = out_mode,
@@ -410,6 +437,9 @@ static int do_cli_link(int argc, char **argv) {
                 .rpath = rpath,
                 .needed_libs = needed_libs,
                 .needed_lib_count = needed_lib_count,
+                .exports = exports,
+                .export_count = export_count,
+                .implib_path = implib_path,
             };
 
             if (!nylink_layout(ctx, &cfg)) {
@@ -429,6 +459,25 @@ static int do_cli_link(int argc, char **argv) {
                         fprintf(stderr, "error: failed to create final output '%s': %s\n", output_file, strerror(errno));
                         remove(tmp_out);
                         exit_code = 1;
+                    } else if (out_mode == NYLINK_OUTPUT_DLL) {
+                        char default_implib[1040];
+                        const char *actual_implib = implib_path;
+                        if (!actual_implib) {
+                            snprintf(default_implib, sizeof(default_implib), "%s", output_file);
+                            char *dot = strrchr(default_implib, '.');
+                            if (dot) {
+                                snprintf(dot, sizeof(default_implib) - (size_t)(dot - default_implib), ".lib");
+                            } else {
+                                snprintf(default_implib + strlen(default_implib), sizeof(default_implib) - strlen(default_implib), ".lib");
+                            }
+                            actual_implib = default_implib;
+                        }
+                        const char *dll_base_name = strrchr(output_file, '/');
+                        if (!dll_base_name) dll_base_name = strrchr(output_file, '\\');
+                        dll_base_name = dll_base_name ? dll_base_name + 1 : output_file;
+                        if (!nylink_write_pe_implib(ctx, actual_implib, dll_base_name)) {
+                            exit_code = 1;
+                        }
                     }
                 }
             }
@@ -463,6 +512,7 @@ static int do_cli_link(int argc, char **argv) {
     if (inputs) ny_free(inputs, input_capacity * sizeof(Link_Input));
     if (search_dirs) ny_free(search_dirs, search_dir_capacity * sizeof(const char *));
     if (needed_libs) ny_free(needed_libs, needed_lib_capacity * sizeof(const char *));
+    if (exports) ny_free(exports, export_capacity * sizeof(const char *));
 
     return exit_code;
 }

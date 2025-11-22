@@ -120,6 +120,7 @@ struct Nylink_Context {
     /* Dynamic linking support (ELF ET_DYN / PIE / ET_EXEC with shared inputs) */
     bool is_shared;
     bool uses_dynamic;
+    Nylink_Target_Format target_format;
     Nylink_Output_Mode output_mode;
     char *dynamic_linker;
     char *soname;
@@ -207,6 +208,39 @@ struct Nylink_Context {
     size_t got_data_capacity;
     size_t got_entry_count;
 
+    /* Windows PE Dynamic Linking (DLL export / Import resolution / .reloc) */
+    char **pe_exports;
+    size_t pe_export_count;
+    size_t pe_export_capacity;
+
+    /* PE Base Relocations (.reloc) */
+    uint32_t *pe_base_relocs;
+    size_t pe_base_reloc_count;
+    size_t pe_base_reloc_capacity;
+
+    uint64_t pe_export_va;
+    uint32_t pe_export_size;
+    uint64_t pe_import_va;
+    uint32_t pe_import_size;
+    uint64_t pe_iat_va;
+    uint32_t pe_iat_size;
+    uint64_t pe_reloc_va;
+    uint32_t pe_reloc_size;
+
+    /* PE Import resolution info */
+    char **pe_dll_names;
+    size_t pe_dll_count;
+    size_t pe_dll_capacity;
+
+    char **pe_imp_sym_names;
+    uint32_t *pe_imp_dll_indices;
+    uint32_t *pe_imp_sym_ids;     /* corresponding ctx->symbols index */
+    size_t pe_imp_count;
+    size_t pe_imp_capacity;
+
+    uint32_t *pe_imp_iat_rvas;    /* RVA of IAT slot for each pe_imp */
+    uint32_t *pe_imp_thunk_rvas;  /* RVA of thunk in .text for each pe_imp (or 0 if data) */
+
     bool has_error;
 };
 
@@ -223,5 +257,6 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg);
 bool nylink_apply_relocations_internal(Nylink_Context *ctx);
 bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, const Nylink_Config *cfg);
 bool nylink_write_pe_executable(Nylink_Context *ctx, const char *out_path, const Nylink_Config *cfg);
+bool nylink_write_pe_implib(Nylink_Context *ctx, const char *out_lib_path, const char *dll_name);
 
 #endif

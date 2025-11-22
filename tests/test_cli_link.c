@@ -10,10 +10,44 @@
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
+#include <windows.h>
 #define mkdir_compat(dir) _mkdir(dir)
+
+static int run_exe_in_dir(const char *dir, const char *exe) {
+    char abs_dir[MAX_PATH];
+    DWORD abs_len = GetFullPathNameA(dir, MAX_PATH, abs_dir, NULL);
+    if (abs_len == 0 || abs_len >= MAX_PATH) return -1;
+
+    char exe_path[MAX_PATH * 2];
+    snprintf(exe_path, sizeof(exe_path), "%s\\%s", abs_dir, exe);
+
+    for (int attempt = 0; attempt < 3; attempt++) {
+        Sleep(200);
+        STARTUPINFOA si;
+        memset(&si, 0, sizeof(si));
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi;
+        memset(&pi, 0, sizeof(pi));
+
+        if (!CreateProcessA(exe_path, NULL, NULL, NULL, FALSE, 0, NULL, abs_dir, &si, &pi)) {
+            continue;
+        }
+
+        WaitForSingleObject(pi.hProcess, 5000);
+        DWORD exit_code = 0;
+        GetExitCodeProcess(pi.hProcess, &exit_code);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+
+        if ((int)exit_code == 42) return 42;
+    }
+    return 0;
+}
 #else
 #include <sys/stat.h>
+#include <unistd.h>
 #define mkdir_compat(dir) mkdir(dir, 0755)
+#define run_exe_in_dir(dir, exe) chdir(dir), system(exe)
 #endif
 
 static void emit_cli_dummy_coff(Ny_Object_Buffer *obj_buf, const char *fn_name, bool add_reloc, const char *reloc_target) {
@@ -469,9 +503,19 @@ void test_cli_link_shared_options(void) {
     fclose(f);
     remove("bin/libcli_foo.so");
 
-    /* 2. Rejection of --shared on PE target */
-    int ret_pe = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/cli_so_input.o -o bin/foo.dll 2>NUL");
-    TEST_ASSERT(ret_pe != 0);
+    /* 2. Success of --shared on PE target (emits DLL and .lib) */
+    int ret_pe = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/cli_so_input.o --export=so_func -o bin/foo.dll");
+    TEST_ASSERT_EQ(ret_pe, 0);
+
+    FILE *f_dll = fopen("bin/foo.dll", "rb");
+    TEST_ASSERT(f_dll != nullptr);
+    fclose(f_dll);
+    remove("bin/foo.dll");
+
+    FILE *f_lib = fopen("bin/foo.lib", "rb");
+    TEST_ASSERT(f_lib != nullptr);
+    fclose(f_lib);
+    remove("bin/foo.lib");
 
     remove("bin/cli_so_input.o");
     ny_obj_buf_destroy(&obj1);
@@ -523,4 +567,168 @@ void test_cli_link_pie_options(void) {
 
     ny_obj_buf_destroy(&obj2);
     ny_obj_buf_destroy(&obj1);
+}
+
+void test_cli_link_pe_dll_e2e(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    mkdir_compat("bin/pe_e2e");
+
+    remove("bin/pe_e2e/foo.dll");
+    remove("bin/pe_e2e/foo.lib");
+    remove("bin/pe_e2e/foo.obj");
+    remove("bin/pe_e2e/app.exe");
+    remove("bin/pe_e2e/main.obj");
+
+    const char *foo_c = "int foo(void) { return 42; }\n";
+    write_file("bin/pe_e2e/foo.c", (const uint8_t *)foo_c, strlen(foo_c));
+
+    int ret_comp_dll = system("tools\\mingw\\bin\\gcc.exe -c bin/pe_e2e/foo.c -o bin/pe_e2e/foo.obj");
+    TEST_ASSERT_EQ(ret_comp_dll, 0);
+
+    int ret_link_dll = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/pe_e2e/foo.obj --export=foo -o bin/pe_e2e/foo.dll");
+    TEST_ASSERT_EQ(ret_link_dll, 0);
+
+    FILE *f_dll = fopen("bin/pe_e2e/foo.dll", "rb");
+    TEST_ASSERT(f_dll != nullptr);
+    fclose(f_dll);
+
+    FILE *f_lib = fopen("bin/pe_e2e/foo.lib", "rb");
+    TEST_ASSERT(f_lib != nullptr);
+    fclose(f_lib);
+
+    const char *main_c = "extern int foo(void);\nint entry(void) { return foo(); }\n";
+    write_file("bin/pe_e2e/main.c", (const uint8_t *)main_c, strlen(main_c));
+
+    int ret_comp_main = system("tools\\mingw\\bin\\gcc.exe -c bin/pe_e2e/main.c -o bin/pe_e2e/main.obj");
+    TEST_ASSERT_EQ(ret_comp_main, 0);
+
+    int ret_link_app = system("bin\\nybit.exe link --target=pe-x86-64 --entry=entry bin/pe_e2e/main.obj bin/pe_e2e/foo.lib -o bin/pe_e2e/app.exe");
+    TEST_ASSERT_EQ(ret_link_app, 0);
+
+    int app_ret = run_exe_in_dir("bin\\pe_e2e", "app.exe");
+    TEST_ASSERT_EQ(app_ret, 42);
+
+    remove("bin/pe_e2e/app.exe");
+    remove("bin/pe_e2e/main.obj");
+    remove("bin/pe_e2e/main.c");
+    remove("bin/pe_e2e/foo.dll");
+    remove("bin/pe_e2e/foo.lib");
+    remove("bin/pe_e2e/foo.obj");
+    remove("bin/pe_e2e/foo.c");
+    _rmdir("bin/pe_e2e");
+    Sleep(500);
+#endif
+}
+
+void test_cli_link_pe_data_e2e(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    mkdir_compat("bin/pe_data_e2e");
+
+    remove("bin/pe_data_e2e/dval.dll");
+    remove("bin/pe_data_e2e/dval.lib");
+    remove("bin/pe_data_e2e/dval.obj");
+    remove("bin/pe_data_e2e/app.exe");
+    remove("bin/pe_data_e2e/main.obj");
+
+    const char *dval_c = "int value = 42;\n";
+    write_file("bin/pe_data_e2e/dval.c", (const uint8_t *)dval_c, strlen(dval_c));
+
+    int ret_comp_dll = system("tools\\mingw\\bin\\gcc.exe -c bin/pe_data_e2e/dval.c -o bin/pe_data_e2e/dval.obj");
+    TEST_ASSERT_EQ(ret_comp_dll, 0);
+
+    int ret_link_dll = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/pe_data_e2e/dval.obj --export=value -o bin/pe_data_e2e/dval.dll");
+    TEST_ASSERT_EQ(ret_link_dll, 0);
+
+    const char *main_c = "extern int value;\nint entry(void) { return value; }\n";
+    write_file("bin/pe_data_e2e/main.c", (const uint8_t *)main_c, strlen(main_c));
+
+    int ret_comp_main = system("tools\\mingw\\bin\\gcc.exe -c bin/pe_data_e2e/main.c -o bin/pe_data_e2e/main.obj");
+    TEST_ASSERT_EQ(ret_comp_main, 0);
+
+    int ret_link_app = system("bin\\nybit.exe link --target=pe-x86-64 --entry=entry bin/pe_data_e2e/main.obj bin/pe_data_e2e/dval.lib -o bin/pe_data_e2e/app.exe");
+    TEST_ASSERT_EQ(ret_link_app, 0);
+
+    int app_ret = run_exe_in_dir("bin\\pe_data_e2e", "app.exe");
+    if (app_ret != 42) {
+        fprintf(stderr, "pe_data_e2e: app returned %d (expected 42)\n", app_ret);
+    }
+    TEST_ASSERT_EQ(app_ret, 42);
+
+    remove("bin/pe_data_e2e/app.exe");
+    remove("bin/pe_data_e2e/main.obj");
+    remove("bin/pe_data_e2e/main.c");
+    remove("bin/pe_data_e2e/dval.dll");
+    remove("bin/pe_data_e2e/dval.lib");
+    remove("bin/pe_data_e2e/dval.obj");
+    remove("bin/pe_data_e2e/dval.c");
+    _rmdir("bin/pe_data_e2e");
+    Sleep(500);
+#endif
+}
+
+void test_cli_link_pe_dll_determinism(void) {
+#if defined(_WIN32) || defined(_WIN64)
+    mkdir_compat("bin/pe_det");
+
+    Ny_Object_Buffer obj;
+    ny_obj_buf_init(&obj);
+    emit_cli_dummy_coff(&obj, "det_func", false, nullptr);
+    write_file("bin/pe_det/in.obj", obj.bytes, obj.count);
+
+    int ret1 = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/pe_det/in.obj --export=det_func --implib=bin/pe_det/a.lib -o bin/pe_det/det.dll");
+    TEST_ASSERT_EQ(ret1, 0);
+
+    FILE *f1d = fopen("bin/pe_det/det.dll", "rb");
+    TEST_ASSERT(f1d != nullptr);
+    fseek(f1d, 0, SEEK_END);
+    long dll_sz = ftell(f1d);
+    fseek(f1d, 0, SEEK_SET);
+    uint8_t *dll1 = (uint8_t *)ny_alloc((size_t)dll_sz);
+    TEST_ASSERT_EQ(fread(dll1, 1, (size_t)dll_sz, f1d), (size_t)dll_sz);
+    fclose(f1d);
+    remove("bin/pe_det/det.dll");
+
+    int ret2 = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/pe_det/in.obj --export=det_func --implib=bin/pe_det/b.lib -o bin/pe_det/det.dll");
+    TEST_ASSERT_EQ(ret2, 0);
+
+    FILE *f2d = fopen("bin/pe_det/det.dll", "rb");
+    TEST_ASSERT(f2d != nullptr);
+    fseek(f2d, 0, SEEK_END);
+    long dll2_sz = ftell(f2d);
+    TEST_ASSERT_EQ(dll_sz, dll2_sz);
+    fseek(f2d, 0, SEEK_SET);
+    uint8_t *dll2 = (uint8_t *)ny_alloc((size_t)dll2_sz);
+    TEST_ASSERT_EQ(fread(dll2, 1, (size_t)dll2_sz, f2d), (size_t)dll2_sz);
+    fclose(f2d);
+    TEST_ASSERT_EQ(memcmp(dll1, dll2, (size_t)dll_sz), 0);
+    ny_free(dll2, (size_t)dll2_sz);
+    ny_free(dll1, (size_t)dll_sz);
+
+    FILE *f1l = fopen("bin/pe_det/a.lib", "rb");
+    FILE *f2l = fopen("bin/pe_det/b.lib", "rb");
+    TEST_ASSERT(f1l && f2l);
+    fseek(f1l, 0, SEEK_END); fseek(f2l, 0, SEEK_END);
+    long s1l = ftell(f1l), s2l = ftell(f2l);
+    TEST_ASSERT_EQ(s1l, s2l);
+    fseek(f1l, 0, SEEK_SET); fseek(f2l, 0, SEEK_SET);
+    {
+        uint8_t b1[1024], b2[1024];
+        long rem = s1l;
+        while (rem > 0) {
+            size_t n = rem > 1024 ? 1024 : (size_t)rem;
+            TEST_ASSERT_EQ(fread(b1, 1, n, f1l), n);
+            TEST_ASSERT_EQ(fread(b2, 1, n, f2l), n);
+            TEST_ASSERT_EQ(memcmp(b1, b2, n), 0);
+            rem -= n;
+        }
+    }
+    fclose(f1l); fclose(f2l);
+
+    remove("bin/pe_det/det.dll");
+    remove("bin/pe_det/a.lib");
+    remove("bin/pe_det/b.lib");
+    remove("bin/pe_det/in.obj");
+    _rmdir("bin/pe_det");
+    ny_obj_buf_destroy(&obj);
+#endif
 }

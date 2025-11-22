@@ -138,17 +138,60 @@ static bool reloc_target_is_writable(Nylink_Context *ctx, const Nylink_Relocatio
     return ctx->sec_layouts[reloc->sec_id].out_sec_idx == 2;
 }
 
+static void pe_append_to_section(Nylink_Output_Section *sec, const void *data, size_t size) {
+    if (size == 0) return;
+    size_t needed = (size_t)sec->file_size + size;
+    if (needed > sec->data_capacity) {
+        size_t ncap = sec->data_capacity ? sec->data_capacity * 2 : 256;
+        while (ncap < needed) ncap *= 2;
+        sec->data = (uint8_t *)ny_realloc(sec->data, sec->data_capacity, ncap);
+        memset(sec->data + sec->data_capacity, 0, ncap - sec->data_capacity);
+        sec->data_capacity = ncap;
+    }
+    if (data) {
+        memcpy(sec->data + sec->file_size, data, size);
+    } else {
+        memset(sec->data + sec->file_size, 0, size);
+    }
+    sec->file_size += size;
+    sec->mem_size = sec->file_size;
+}
+
+static void pe_pad_section(Nylink_Output_Section *sec, size_t align) {
+    if (align <= 1) return;
+    size_t rem = (size_t)sec->file_size % align;
+    if (rem != 0) {
+        size_t pad = align - rem;
+        pe_append_to_section(sec, nullptr, pad);
+    }
+}
+
+static int pe_export_name_cmp(const void *a, const void *b) {
+    const char *sa = *(const char * const *)a;
+    const char *sb = *(const char * const *)b;
+    return strcmp(sa, sb);
+}
+
 bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
     if (!ctx) return false;
     bool overflow = false;
 
     bool is_elf_target = !cfg || cfg->target_format == NYLINK_TARGET_ELF64;
+    ctx->target_format = cfg ? cfg->target_format : NYLINK_TARGET_ELF64;
 
-    if (cfg && (cfg->output_mode == NYLINK_OUTPUT_SHARED || cfg->output_mode == NYLINK_OUTPUT_PIE)) {
-        ctx->is_shared = true;
+    if (cfg && (cfg->output_mode == NYLINK_OUTPUT_SHARED || cfg->output_mode == NYLINK_OUTPUT_PIE || cfg->output_mode == NYLINK_OUTPUT_DLL)) {
+        ctx->is_shared = (cfg->output_mode == NYLINK_OUTPUT_SHARED || cfg->output_mode == NYLINK_OUTPUT_DLL);
         ctx->output_mode = cfg->output_mode;
     }
-    if (cfg && cfg->soname && !ctx->soname && cfg->output_mode == NYLINK_OUTPUT_SHARED) {
+    if (cfg && cfg->exports && cfg->export_count > 0 && ctx->pe_export_count == 0) {
+        for (size_t e = 0; e < cfg->export_count; e++) {
+            if (cfg->exports[e]) {
+                nylink_add_export(ctx, cfg->exports[e]);
+            }
+        }
+    }
+    if (cfg && cfg->soname && !ctx->soname &&
+        (cfg->output_mode == NYLINK_OUTPUT_SHARED || cfg->output_mode == NYLINK_OUTPUT_DLL)) {
         size_t slen = strlen(cfg->soname);
         ctx->soname = (char *)ny_alloc(slen + 1);
         memcpy(ctx->soname, cfg->soname, slen + 1);
@@ -171,7 +214,7 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         }
     }
 
-    ctx->uses_dynamic = ctx->is_shared || ctx->needed_lib_count > 0 || (cfg && cfg->soname);
+    ctx->uses_dynamic = ctx->is_shared || ctx->needed_lib_count > 0 || (cfg && cfg->soname) || (ctx->dynamic_linker != nullptr) || (cfg && cfg->dynamic_linker != nullptr);
     if (!ctx->uses_dynamic) {
         for (size_t i = 0; i < ctx->object_count; i++) {
             if (ctx->objects[i].is_shared_input) {
@@ -356,7 +399,13 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
     uint64_t header_file_size = 0x1000;
 
     if (cfg && cfg->target_format == NYLINK_TARGET_PE) {
-        base_va = (cfg->base_address != 0) ? cfg->base_address : 0x140000000ULL;
+        if (cfg->base_address != 0) {
+            base_va = cfg->base_address;
+        } else if (ctx->output_mode == NYLINK_OUTPUT_DLL) {
+            base_va = 0x180000000ULL;
+        } else {
+            base_va = 0x140000000ULL;
+        }
         page_size = 0x1000;
         file_align = 0x200;
         header_file_size = 0x400;
@@ -372,6 +421,235 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
 
     uint64_t current_rva = page_size;
     uint64_t current_file_off = header_file_size;
+
+    if (cfg && cfg->target_format == NYLINK_TARGET_PE) {
+        /* Windows PE Dynamic Linking: DLL Export Directory */
+        if (ctx->pe_export_count > 0) {
+            /* Sort exports lexicographically for binary search */
+            qsort(ctx->pe_exports, ctx->pe_export_count, sizeof(char *), pe_export_name_cmp);
+
+            Nylink_Output_Section *sec_rdata = &ctx->out_sections[1];
+            pe_pad_section(sec_rdata, 4);
+
+            uint32_t exp_sec_offset = (uint32_t)sec_rdata->file_size;
+            uint32_t num_exports = (uint32_t)ctx->pe_export_count;
+
+            const char *out_dll_name = ctx->soname ? ctx->soname : (cfg->soname ? cfg->soname : "output.dll");
+            size_t dll_name_len = strlen(out_dll_name);
+
+            size_t names_total_len = 0;
+            for (size_t e = 0; e < ctx->pe_export_count; e++) {
+                names_total_len += strlen(ctx->pe_exports[e]) + 1;
+            }
+
+            size_t exp_total_bytes = 40 + (size_t)num_exports * 4 + (size_t)num_exports * 4 +
+                                     (size_t)num_exports * 2 + dll_name_len + 1 + names_total_len;
+            exp_total_bytes = (exp_total_bytes + 3) & ~3ULL;
+
+            uint8_t *exp_buf = (uint8_t *)ny_alloc_zero(exp_total_bytes);
+
+            uint32_t eat_off = 40;
+            uint32_t npt_off = eat_off + num_exports * 4;
+            uint32_t ot_off  = npt_off + num_exports * 4;
+            uint32_t dll_name_off = ot_off + num_exports * 2;
+            uint32_t names_off = dll_name_off + (uint32_t)dll_name_len + 1;
+
+            uint32_t text_aligned_rva = (uint32_t)((ctx->out_sections[0].mem_size + page_size - 1) & ~(page_size - 1));
+            uint32_t rdata_base_rva = (uint32_t)page_size + text_aligned_rva;
+            uint32_t exp_base_rva = rdata_base_rva + exp_sec_offset;
+
+            *(uint32_t *)(exp_buf + 12) = exp_base_rva + dll_name_off; /* Name RVA */
+            *(uint32_t *)(exp_buf + 16) = 1;                           /* Ordinal Base = 1 */
+            *(uint32_t *)(exp_buf + 20) = num_exports;                 /* NumberOfFunctions */
+            *(uint32_t *)(exp_buf + 24) = num_exports;                 /* NumberOfNames */
+            *(uint32_t *)(exp_buf + 28) = exp_base_rva + eat_off;      /* AddressOfFunctions */
+            *(uint32_t *)(exp_buf + 32) = exp_base_rva + npt_off;      /* AddressOfNames */
+            *(uint32_t *)(exp_buf + 36) = exp_base_rva + ot_off;       /* AddressOfNameOrdinals */
+
+            memcpy(exp_buf + dll_name_off, out_dll_name, dll_name_len + 1);
+
+            uint32_t cur_name_off = names_off;
+            for (uint32_t e = 0; e < num_exports; e++) {
+                const char *sname = ctx->pe_exports[e];
+                size_t slen = strlen(sname);
+                memcpy(exp_buf + cur_name_off, sname, slen + 1);
+
+                *(uint32_t *)(exp_buf + npt_off + e * 4) = exp_base_rva + cur_name_off;
+                *(uint16_t *)(exp_buf + ot_off + e * 2) = (uint16_t)e;
+
+                const Nylink_Symbol *esym = nylink_find_symbol(ctx, sname);
+                uint32_t sym_rva = 0;
+                if (esym && esym->is_defined && esym->sec_id < ctx->section_count) {
+                    uint32_t out_sec_idx = ctx->sec_layouts[esym->sec_id].out_sec_idx;
+                    uint64_t in_sec_va_offset = ctx->sec_layouts[esym->sec_id].offset_in_out_sec + esym->value;
+                    uint32_t sec_rva_start = (uint32_t)page_size;
+                    if (out_sec_idx == 1) sec_rva_start += text_aligned_rva;
+                    else if (out_sec_idx == 2) {
+                        uint32_t rdata_aligned_rva = (uint32_t)((ctx->out_sections[1].mem_size + page_size - 1) & ~(page_size - 1));
+                        sec_rva_start += text_aligned_rva + rdata_aligned_rva;
+                    }
+                    sym_rva = sec_rva_start + (uint32_t)in_sec_va_offset;
+                }
+                *(uint32_t *)(exp_buf + eat_off + e * 4) = sym_rva;
+
+                cur_name_off += (uint32_t)(slen + 1);
+            }
+
+            pe_append_to_section(sec_rdata, exp_buf, exp_total_bytes);
+            ny_free(exp_buf, exp_total_bytes);
+
+            ctx->pe_export_va = base_va + exp_base_rva;
+            ctx->pe_export_size = (uint32_t)exp_total_bytes;
+        }
+
+        /* Windows PE Dynamic Linking: Import Resolution & Tables */
+        if (ctx->pe_imp_count > 0) {
+            Nylink_Output_Section *sec_text = &ctx->out_sections[0];
+            Nylink_Output_Section *sec_rdata = &ctx->out_sections[1];
+
+            /* Function thunks in .text: FF 25 <disp32> */
+            pe_pad_section(sec_text, 16);
+            for (size_t i = 0; i < ctx->pe_imp_count; i++) {
+                const char *sname = ctx->pe_imp_sym_names[i];
+                const Nylink_Symbol *sym = nylink_find_symbol(ctx, sname);
+                bool is_func = sym ? sym->is_function : true;
+
+                if (is_func) {
+                    pe_pad_section(sec_text, 4);
+                    uint32_t thunk_off = (uint32_t)sec_text->file_size;
+                    uint8_t thunk_code[6] = { 0xFF, 0x25, 0, 0, 0, 0 };
+                    pe_append_to_section(sec_text, thunk_code, 6);
+                    ctx->pe_imp_thunk_rvas[i] = (uint32_t)page_size + thunk_off;
+                } else {
+                    ctx->pe_imp_thunk_rvas[i] = 0;
+                }
+            }
+
+            /* Import tables in .rdata */
+            pe_pad_section(sec_rdata, 8);
+            uint32_t iat_sec_off = (uint32_t)sec_rdata->file_size;
+
+            uint32_t text_aligned_rva = (uint32_t)((ctx->out_sections[0].mem_size + page_size - 1) & ~(page_size - 1));
+            uint32_t rdata_base_rva = (uint32_t)page_size + text_aligned_rva;
+            uint32_t iat_base_rva = rdata_base_rva + iat_sec_off;
+
+            size_t iat_total_entries = ctx->pe_imp_count + ctx->pe_dll_count;
+            size_t iat_bytes = iat_total_entries * 8;
+            size_t idt_bytes = (ctx->pe_dll_count + 1) * 20;
+            size_t ilt_bytes = iat_bytes;
+
+            size_t hint_names_bytes = 0;
+            for (size_t i = 0; i < ctx->pe_imp_count; i++) {
+                size_t nlen = strlen(ctx->pe_imp_sym_names[i]);
+                size_t entry_len = 2 + nlen + 1;
+                if (entry_len % 2 != 0) entry_len++;
+                hint_names_bytes += entry_len;
+            }
+
+            size_t dll_names_total = 0;
+            for (size_t d = 0; d < ctx->pe_dll_count; d++) {
+                dll_names_total += strlen(ctx->pe_dll_names[d]) + 1;
+            }
+
+            size_t imp_total_bytes = iat_bytes + idt_bytes + ilt_bytes + hint_names_bytes + dll_names_total;
+            imp_total_bytes = (imp_total_bytes + 7) & ~7ULL;
+
+            uint8_t *imp_buf = (uint8_t *)ny_alloc_zero(imp_total_bytes);
+
+            uint32_t idt_off = (uint32_t)iat_bytes;
+            uint32_t ilt_off = idt_off + (uint32_t)idt_bytes;
+            uint32_t hn_off  = ilt_off + (uint32_t)ilt_bytes;
+            uint32_t dll_str_off = hn_off + (uint32_t)hint_names_bytes;
+
+            uint32_t cur_iat_idx = 0;
+            uint32_t cur_hn_off = hn_off;
+            uint32_t cur_dll_str_off = dll_str_off;
+
+            for (size_t d = 0; d < ctx->pe_dll_count; d++) {
+                const char *dname = ctx->pe_dll_names[d];
+                size_t dlen = strlen(dname);
+                memcpy(imp_buf + cur_dll_str_off, dname, dlen + 1);
+                uint32_t dll_name_rva = rdata_base_rva + iat_sec_off + cur_dll_str_off;
+                cur_dll_str_off += (uint32_t)(dlen + 1);
+
+                uint32_t dll_iat_start_rva = rdata_base_rva + iat_sec_off + cur_iat_idx * 8;
+                uint32_t dll_ilt_start_rva = rdata_base_rva + iat_sec_off + ilt_off + cur_iat_idx * 8;
+
+                uint32_t cur_idt_entry_off = idt_off + (uint32_t)d * 20;
+                *(uint32_t *)(imp_buf + cur_idt_entry_off + 0) = dll_ilt_start_rva;
+                *(uint32_t *)(imp_buf + cur_idt_entry_off + 12) = dll_name_rva;
+                *(uint32_t *)(imp_buf + cur_idt_entry_off + 16) = dll_iat_start_rva;
+
+                for (size_t i = 0; i < ctx->pe_imp_count; i++) {
+                    if (ctx->pe_imp_dll_indices[i] != d) continue;
+
+                    const char *sym_name = ctx->pe_imp_sym_names[i];
+                    size_t slen = strlen(sym_name);
+                    size_t entry_len = 2 + slen + 1;
+                    if (entry_len % 2 != 0) entry_len++;
+
+                    *(uint16_t *)(imp_buf + cur_hn_off) = 0;
+                    memcpy(imp_buf + cur_hn_off + 2, sym_name, slen + 1);
+
+                    uint32_t hn_rva = rdata_base_rva + iat_sec_off + cur_hn_off;
+                    cur_hn_off += (uint32_t)entry_len;
+
+                    *(uint64_t *)(imp_buf + cur_iat_idx * 8) = (uint64_t)hn_rva;
+                    *(uint64_t *)(imp_buf + ilt_off + cur_iat_idx * 8) = (uint64_t)hn_rva;
+
+                    ctx->pe_imp_iat_rvas[i] = rdata_base_rva + iat_sec_off + cur_iat_idx * 8;
+                    cur_iat_idx++;
+                }
+
+                *(uint64_t *)(imp_buf + cur_iat_idx * 8) = 0;
+                *(uint64_t *)(imp_buf + ilt_off + cur_iat_idx * 8) = 0;
+                cur_iat_idx++;
+            }
+
+            pe_append_to_section(sec_rdata, imp_buf, imp_total_bytes);
+            ny_free(imp_buf, imp_total_bytes);
+
+            ctx->pe_iat_va = base_va + iat_base_rva;
+            ctx->pe_iat_size = (uint32_t)iat_bytes;
+            ctx->pe_import_va = base_va + rdata_base_rva + iat_sec_off + idt_off;
+            ctx->pe_import_size = (uint32_t)idt_bytes;
+
+            /* Update thunk jump offsets in .text */
+            for (size_t i = 0; i < ctx->pe_imp_count; i++) {
+                if (ctx->pe_imp_thunk_rvas[i] != 0) {
+                    uint32_t thunk_off_in_text = ctx->pe_imp_thunk_rvas[i] - (uint32_t)page_size;
+                    uint64_t thunk_va = base_va + ctx->pe_imp_thunk_rvas[i];
+                    uint64_t iat_slot_va = base_va + ctx->pe_imp_iat_rvas[i];
+                    int32_t disp = (int32_t)((int64_t)iat_slot_va - (int64_t)(thunk_va + 6));
+                    memcpy(sec_text->data + thunk_off_in_text + 2, &disp, 4);
+                }
+            }
+
+            /* Update resolved_symbols for imported symbols */
+            for (size_t i = 0; i < ctx->pe_imp_count; i++) {
+                const char *sname = ctx->pe_imp_sym_names[i];
+                const Nylink_Symbol *sym = nylink_find_symbol(ctx, sname);
+                if (sym) {
+                    if (ctx->pe_imp_thunk_rvas[i] != 0) {
+                        ctx->resolved_symbols[sym->id].final_va = base_va + ctx->pe_imp_thunk_rvas[i];
+                    } else {
+                        ctx->resolved_symbols[sym->id].final_va = base_va + ctx->pe_imp_iat_rvas[i];
+                    }
+                    ctx->resolved_symbols[sym->id].is_defined = true;
+                    ctx->resolved_symbols[sym->id].is_dynamic = true;
+                }
+
+                char imp_name[512];
+                snprintf(imp_name, sizeof(imp_name), "__imp_%s", sname);
+                const Nylink_Symbol *isym = nylink_find_symbol(ctx, imp_name);
+                if (isym) {
+                    ctx->resolved_symbols[isym->id].final_va = base_va + ctx->pe_imp_iat_rvas[i];
+                    ctx->resolved_symbols[isym->id].is_defined = true;
+                    ctx->resolved_symbols[isym->id].is_dynamic = true;
+                }
+            }
+        }
+    }
 
     if (ctx->uses_dynamic && is_elf_target) {
         if (!ctx->dynstr_data) {
@@ -517,7 +795,7 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
 
     for (size_t out_idx = 0; out_idx < 3; out_idx++) {
         Nylink_Output_Section *out_sec = &ctx->out_sections[out_idx];
-        if (out_sec->mem_size == 0) {
+        if (out_sec->mem_size == 0 && out_sec->file_size == 0) {
             out_sec->va = 0;
             out_sec->file_offset = 0;
             continue;
@@ -587,6 +865,8 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
 
         if (sym->is_defined && !sym->is_dynamic && sym->sec_id < ctx->section_count) {
             ctx->resolved_symbols[s].final_va = ctx->sec_layouts[sym->sec_id].va + sym->value;
+        } else if (sym->is_dynamic && ctx->resolved_symbols[s].final_va != 0) {
+            /* Keep pre-assigned VA (e.g. PE import IAT or function thunk) */
         } else {
             ctx->resolved_symbols[s].final_va = 0;
         }
@@ -603,13 +883,45 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
                 ctx->resolved_symbols[s].is_defined = true;
                 ctx->resolved_symbols[s].is_dynamic = false;
             } else {
+                if (ctx->resolved_symbols[def_sym->id].final_va != 0) {
+                    ctx->resolved_symbols[s].final_va = ctx->resolved_symbols[def_sym->id].final_va;
+                }
                 ctx->resolved_symbols[s].is_defined = true;
                 ctx->resolved_symbols[s].is_dynamic = true;
             }
         }
     }
 
-    if (ctx->output_mode == NYLINK_OUTPUT_SHARED) {
+    /* PE imported-data redirect: when an imported data symbol is referenced
+       through a .refptr.<name> indirection (MinGW pattern), redirect the
+       .refptr symbol's VA to the IAT slot. This makes the generated code
+       load the value VA directly from the IAT instead of loading a pointer
+       to the IAT and then loading from it (which would yield the low 32
+       bits of the pointer, not the data). */
+    if (ctx->target_format == NYLINK_TARGET_PE && ctx->pe_imp_count > 0) {
+        for (size_t i = 0; i < ctx->pe_imp_count; i++) {
+            if (ctx->pe_imp_thunk_rvas[i] != 0) continue; /* function import uses thunk */
+            uint32_t iat_rva = ctx->pe_imp_iat_rvas[i];
+            if (iat_rva == 0) continue;
+
+            char refptr_name[512];
+            snprintf(refptr_name, sizeof(refptr_name), ".refptr.%s", ctx->pe_imp_sym_names[i]);
+
+            for (size_t s = 0; s < ctx->symbol_count; s++) {
+                Nylink_Symbol *sym = &ctx->symbols[s];
+                if (!sym->name || strcmp(sym->name, refptr_name) != 0) continue;
+                if (!sym->is_defined || sym->is_dynamic) continue;
+
+                ctx->resolved_symbols[s].final_va = base_va + iat_rva;
+                ctx->resolved_symbols[s].is_defined = true;
+                ctx->resolved_symbols[s].is_dynamic = true;
+                sym->is_pe_refptr_redirect = true;
+                break;
+            }
+        }
+    }
+
+    if (ctx->output_mode == NYLINK_OUTPUT_SHARED || ctx->output_mode == NYLINK_OUTPUT_DLL) {
         ctx->entry_point_va = 0;
         if (cfg && cfg->entry_point) {
             const Nylink_Symbol *entry_sym = nylink_find_symbol(ctx, cfg->entry_point);

@@ -190,6 +190,49 @@ void nylink_context_destroy(Nylink_Context *ctx) {
         ny_free(ctx->dynamic_linker, strlen(ctx->dynamic_linker) + 1);
     }
 
+    if (ctx->pe_exports) {
+        for (size_t i = 0; i < ctx->pe_export_count; i++) {
+            if (ctx->pe_exports[i]) {
+                ny_free(ctx->pe_exports[i], strlen(ctx->pe_exports[i]) + 1);
+            }
+        }
+        ny_free(ctx->pe_exports, ctx->pe_export_capacity * sizeof(char *));
+    }
+
+    if (ctx->pe_base_relocs) {
+        ny_free(ctx->pe_base_relocs, ctx->pe_base_reloc_capacity * sizeof(uint32_t));
+    }
+
+    if (ctx->pe_dll_names) {
+        for (size_t i = 0; i < ctx->pe_dll_count; i++) {
+            if (ctx->pe_dll_names[i]) {
+                ny_free(ctx->pe_dll_names[i], strlen(ctx->pe_dll_names[i]) + 1);
+            }
+        }
+        ny_free(ctx->pe_dll_names, ctx->pe_dll_capacity * sizeof(char *));
+    }
+
+    if (ctx->pe_imp_sym_names) {
+        for (size_t i = 0; i < ctx->pe_imp_count; i++) {
+            if (ctx->pe_imp_sym_names[i]) {
+                ny_free(ctx->pe_imp_sym_names[i], strlen(ctx->pe_imp_sym_names[i]) + 1);
+            }
+        }
+        ny_free(ctx->pe_imp_sym_names, ctx->pe_imp_capacity * sizeof(char *));
+    }
+    if (ctx->pe_imp_dll_indices) {
+        ny_free(ctx->pe_imp_dll_indices, ctx->pe_imp_capacity * sizeof(uint32_t));
+    }
+    if (ctx->pe_imp_sym_ids) {
+        ny_free(ctx->pe_imp_sym_ids, ctx->pe_imp_capacity * sizeof(uint32_t));
+    }
+    if (ctx->pe_imp_iat_rvas) {
+        ny_free(ctx->pe_imp_iat_rvas, ctx->pe_imp_capacity * sizeof(uint32_t));
+    }
+    if (ctx->pe_imp_thunk_rvas) {
+        ny_free(ctx->pe_imp_thunk_rvas, ctx->pe_imp_capacity * sizeof(uint32_t));
+    }
+
     ny_free(ctx, sizeof(Nylink_Context));
 }
 
@@ -203,8 +246,23 @@ void nylink_context_set_shared(Nylink_Context *ctx, bool is_shared) {
 void nylink_context_set_output_mode(Nylink_Context *ctx, Nylink_Output_Mode mode) {
     if (ctx) {
         ctx->output_mode = mode;
-        ctx->is_shared = (mode == NYLINK_OUTPUT_SHARED || mode == NYLINK_OUTPUT_PIE);
+        ctx->is_shared = (mode == NYLINK_OUTPUT_SHARED || mode == NYLINK_OUTPUT_PIE || mode == NYLINK_OUTPUT_DLL);
     }
+}
+
+bool nylink_add_export(Nylink_Context *ctx, const char *symbol_name) {
+    if (!ctx || !symbol_name || symbol_name[0] == '\0') return false;
+    for (size_t i = 0; i < ctx->pe_export_count; i++) {
+        if (strcmp(ctx->pe_exports[i], symbol_name) == 0) {
+            return true;
+        }
+    }
+    ny_buf_grow((void **)&ctx->pe_exports, &ctx->pe_export_capacity, ctx->pe_export_count, sizeof(char *));
+    size_t len = strlen(symbol_name);
+    char *copy = (char *)ny_alloc(len + 1);
+    memcpy(copy, symbol_name, len + 1);
+    ctx->pe_exports[ctx->pe_export_count++] = copy;
+    return true;
 }
 
 bool nylink_add_object(Nylink_Context *ctx, const char *name, const uint8_t *data, size_t size) {

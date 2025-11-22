@@ -240,6 +240,8 @@ bool nylink_read_coff(Nylink_Context *ctx, uint32_t obj_idx) {
                 nsym->value = csym->Value;
                 nsym->size = 0;
                 nsym->obj_index = obj_idx;
+                nsym->is_function = (csym->Type == 0x20);
+                nsym->is_object = is_def && (csym->Type != 0x20);
             }
 
             i += csym->NumberOfAuxSymbols;
@@ -278,8 +280,13 @@ bool nylink_read_coff(Nylink_Context *ctx, uint32_t obj_idx) {
             }
 
             Nylink_Reloc_Type rtype = NYLINK_RELOC_NONE;
-            if (crel->Type == IMAGE_REL_AMD64_ADDR64) rtype = NYLINK_RELOC_X86_64_64;
-            else if (crel->Type == IMAGE_REL_AMD64_REL32) rtype = NYLINK_RELOC_X86_64_PC32;
+            int64_t addend = 0;
+            if (crel->Type == IMAGE_REL_AMD64_ADDR64) {
+                rtype = NYLINK_RELOC_X86_64_64;
+            } else if (crel->Type == IMAGE_REL_AMD64_REL32) {
+                rtype = NYLINK_RELOC_X86_64_PC32;
+                addend = -4;
+            }
 
             uint32_t nylink_sym_id = UINT32_MAX;
             if (coff_to_nylink_sym && crel->SymbolTableIndex < num_symbols) {
@@ -292,7 +299,7 @@ bool nylink_read_coff(Nylink_Context *ctx, uint32_t obj_idx) {
             nrel->offset = crel->VirtualAddress;
             nrel->type = rtype;
             nrel->sym_id = nylink_sym_id;
-            nrel->addend = -4; /* In COFF x86-64, PC-relative relocations have implicit -4 addend */
+            nrel->addend = addend;
         }
     }
 

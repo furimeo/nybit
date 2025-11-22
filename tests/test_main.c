@@ -162,6 +162,15 @@ void test_nylink_pie_executable_emission(void);
 void test_nylink_copy_reloc_rejection(void);
 void test_cli_link_pie_options(void);
 void test_nylink_gotpcrel_relocation(void);
+void test_nylink_pe_shared_emission(void);
+void test_nylink_pe_import_resolution(void);
+void test_cli_link_pe_dll_e2e(void);
+void test_cli_link_pe_data_e2e(void);
+void test_cli_link_pe_dll_determinism(void);
+void test_nylink_pe_dll_structural_validation(void);
+void test_nylink_pe_import_structural_validation(void);
+void test_nylink_pe_base_reloc_validation(void);
+void test_nylink_pe_negative_tests(void);
 
 void test_linux_runtime_env_detection(void);
 void test_linux_runtime_shared_lib_structure(void);
@@ -336,6 +345,15 @@ int main(void) {
     RUN_TEST(test_nylink_copy_reloc_rejection);
     RUN_TEST(test_cli_link_pie_options);
     RUN_TEST(test_nylink_gotpcrel_relocation);
+    RUN_TEST(test_nylink_pe_shared_emission);
+    RUN_TEST(test_nylink_pe_import_resolution);
+    RUN_TEST(test_cli_link_pe_dll_e2e);
+    RUN_TEST(test_cli_link_pe_data_e2e);
+    RUN_TEST(test_cli_link_pe_dll_determinism);
+    RUN_TEST(test_nylink_pe_dll_structural_validation);
+    RUN_TEST(test_nylink_pe_import_structural_validation);
+    RUN_TEST(test_nylink_pe_base_reloc_validation);
+    RUN_TEST(test_nylink_pe_negative_tests);
 
     RUN_TEST(test_linux_runtime_env_detection);
     RUN_TEST(test_linux_runtime_shared_lib_structure);
