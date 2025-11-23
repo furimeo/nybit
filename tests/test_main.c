@@ -205,6 +205,13 @@ void test_aarch64_nylink_arch_mismatch(void);
 void test_aarch64_jit_compile_encoded(void);
 void test_aarch64_jit_determinism(void);
 
+void test_aarch64_shared_emission(void);
+void test_aarch64_pie_emission(void);
+void test_aarch64_shared_determinism(void);
+void test_aarch64_pie_determinism(void);
+void test_aarch64_shared_structural_validation(void);
+void test_aarch64_exec_elf_machine_check(void);
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -407,6 +414,13 @@ int main(void) {
     RUN_TEST(test_aarch64_nylink_arch_mismatch);
     RUN_TEST(test_aarch64_jit_compile_encoded);
     RUN_TEST(test_aarch64_jit_determinism);
+
+    RUN_TEST(test_aarch64_shared_emission);
+    RUN_TEST(test_aarch64_pie_emission);
+    RUN_TEST(test_aarch64_shared_determinism);
+    RUN_TEST(test_aarch64_pie_determinism);
+    RUN_TEST(test_aarch64_shared_structural_validation);
+    RUN_TEST(test_aarch64_exec_elf_machine_check);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);
