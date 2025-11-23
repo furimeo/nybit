@@ -9,6 +9,7 @@
 #include "nybit/machine.h"
 #include "nybit/target.h"
 #include "nybit/target_x86_64.h"
+#include "nybit/target_aarch64.h"
 #include "nybit/regalloc.h"
 #include "nybit/object.h"
 #include "nybit/x86_encode.h"
@@ -250,57 +251,104 @@ static Nygen_Result run_backend(Ny_Context *ctx, const Nygen_Config *config) {
     }
 
     X86_Module xmod;
+    AArch64_Module aarch64_mod;
     Ny_Diagnostic_List x86_diags;
     ny_diagnostic_list_init(&x86_diags);
-    bool x86_ok = x86_lower_machine_mod(target, &mmod, &xmod, &x86_diags);
-    if (!x86_ok) {
-        copy_diags_from_list(&res, &x86_diags);
-        ny_diagnostic_list_destroy(&x86_diags);
-        x86_mod_destroy(&xmod);
-        ny_mmod_destroy(&mmod);
-        res.success = false;
-        return res;
+    bool x86_ok = false;
+    bool use_aarch64 = (target->arch == NY_ARCH_AARCH64);
+
+    if (use_aarch64) {
+        bool ok = aarch64_lower_machine_mod(target, &mmod, &aarch64_mod, &x86_diags);
+        if (!ok) {
+            copy_diags_from_list(&res, &x86_diags);
+            ny_diagnostic_list_destroy(&x86_diags);
+            aarch64_mod_destroy(&aarch64_mod);
+            ny_mmod_destroy(&mmod);
+            res.success = false;
+            return res;
+        }
+    } else {
+        x86_ok = x86_lower_machine_mod(target, &mmod, &xmod, &x86_diags);
+        if (!x86_ok) {
+            copy_diags_from_list(&res, &x86_diags);
+            ny_diagnostic_list_destroy(&x86_diags);
+            x86_mod_destroy(&xmod);
+            ny_mmod_destroy(&mmod);
+            res.success = false;
+            return res;
+        }
     }
     ny_diagnostic_list_destroy(&x86_diags);
 
     if (config->output_kind == NYGEN_OUTPUT_ASM) {
-        char *x86_dump = x86_dump_mod(&xmod, &ctx->arena);
-        size_t dump_len = strlen(x86_dump);
+        char *asm_dump = use_aarch64 ? aarch64_dump_mod(&aarch64_mod, &ctx->arena) : x86_dump_mod(&xmod, &ctx->arena);
+        size_t dump_len = strlen(asm_dump);
         res.size = dump_len + 1;
         res.data = (uint8_t *)ny_alloc(res.size);
-        memcpy(res.data, x86_dump, res.size);
+        memcpy(res.data, asm_dump, res.size);
 
-        x86_mod_destroy(&xmod);
+        if (use_aarch64) aarch64_mod_destroy(&aarch64_mod);
+        else x86_mod_destroy(&xmod);
         ny_mmod_destroy(&mmod);
         res.success = true;
         return res;
     }
 
     X86_Encoded_Module emod;
+    AArch64_Encoded_Module aarch64_emod;
     Ny_Diagnostic_List enc_diags;
     ny_diagnostic_list_init(&enc_diags);
-    bool enc_ok = x86_encode_module(&emod, &xmod, &enc_diags);
+    bool enc_ok = false;
+
+    if (use_aarch64) {
+        enc_ok = aarch64_encode_module(&aarch64_emod, &aarch64_mod, &enc_diags);
+    } else {
+        enc_ok = x86_encode_module(&emod, &xmod, &enc_diags);
+    }
     if (!enc_ok) {
         copy_diags_from_list(&res, &enc_diags);
         ny_diagnostic_list_destroy(&enc_diags);
-        x86_encoded_mod_destroy(&emod);
-        x86_mod_destroy(&xmod);
+        if (use_aarch64) {
+            aarch64_encoded_mod_destroy(&aarch64_emod);
+            aarch64_mod_destroy(&aarch64_mod);
+        } else {
+            x86_encoded_mod_destroy(&emod);
+            x86_mod_destroy(&xmod);
+        }
         ny_mmod_destroy(&mmod);
         res.success = false;
         return res;
     }
     ny_diagnostic_list_destroy(&enc_diags);
-    emod.debug_info = config->debug_info;
-    emod.emit_unwind = config->emit_unwind;
+    if (use_aarch64) {
+        aarch64_emod.debug_info = config->debug_info;
+        aarch64_emod.emit_unwind = config->emit_unwind;
+    } else {
+        emod.debug_info = config->debug_info;
+        emod.emit_unwind = config->emit_unwind;
+    }
 
     if (config->output_kind == NYGEN_OUTPUT_BYTES) {
-        res.size = emod.text_section.count;
-        if (res.size > 0) {
-            res.data = (uint8_t *)ny_alloc(res.size);
-            memcpy(res.data, emod.text_section.bytes, res.size);
+        if (use_aarch64) {
+            res.size = aarch64_emod.text_section.count;
+            if (res.size > 0) {
+                res.data = (uint8_t *)ny_alloc(res.size);
+                memcpy(res.data, aarch64_emod.text_section.bytes, res.size);
+            }
+        } else {
+            res.size = emod.text_section.count;
+            if (res.size > 0) {
+                res.data = (uint8_t *)ny_alloc(res.size);
+                memcpy(res.data, emod.text_section.bytes, res.size);
+            }
         }
-        x86_encoded_mod_destroy(&emod);
-        x86_mod_destroy(&xmod);
+        if (use_aarch64) {
+            aarch64_encoded_mod_destroy(&aarch64_emod);
+            aarch64_mod_destroy(&aarch64_mod);
+        } else {
+            x86_encoded_mod_destroy(&emod);
+            x86_mod_destroy(&xmod);
+        }
         ny_mmod_destroy(&mmod);
         res.success = true;
         return res;
@@ -310,13 +358,23 @@ static Nygen_Result run_backend(Ny_Context *ctx, const Nygen_Config *config) {
     ny_obj_buf_init(&obj_buf);
     Ny_Diagnostic_List obj_diags;
     ny_diagnostic_list_init(&obj_diags);
-    bool obj_ok = ny_emit_object_module(&obj_buf, target, &emod, &obj_diags);
+    bool obj_ok = false;
+    if (use_aarch64) {
+        obj_ok = ny_emit_object_module(&obj_buf, target, &aarch64_emod, &obj_diags);
+    } else {
+        obj_ok = ny_emit_object_module(&obj_buf, target, &emod, &obj_diags);
+    }
     if (!obj_ok) {
         copy_diags_from_list(&res, &obj_diags);
         ny_diagnostic_list_destroy(&obj_diags);
         ny_obj_buf_destroy(&obj_buf);
-        x86_encoded_mod_destroy(&emod);
-        x86_mod_destroy(&xmod);
+        if (use_aarch64) {
+            aarch64_encoded_mod_destroy(&aarch64_emod);
+            aarch64_mod_destroy(&aarch64_mod);
+        } else {
+            x86_encoded_mod_destroy(&emod);
+            x86_mod_destroy(&xmod);
+        }
         ny_mmod_destroy(&mmod);
         res.success = false;
         return res;
@@ -330,8 +388,13 @@ static Nygen_Result run_backend(Ny_Context *ctx, const Nygen_Config *config) {
     }
 
     ny_obj_buf_destroy(&obj_buf);
-    x86_encoded_mod_destroy(&emod);
-    x86_mod_destroy(&xmod);
+    if (use_aarch64) {
+        aarch64_encoded_mod_destroy(&aarch64_emod);
+        aarch64_mod_destroy(&aarch64_mod);
+    } else {
+        x86_encoded_mod_destroy(&emod);
+        x86_mod_destroy(&xmod);
+    }
     ny_mmod_destroy(&mmod);
     res.success = true;
     return res;
@@ -618,28 +681,55 @@ bool nygen_compile_encoded(const char *source_text, size_t source_len, const Nyg
     }
 
     X86_Module xmod;
+    AArch64_Module aarch64_mod;
     Ny_Diagnostic_List x86_diags;
     ny_diagnostic_list_init(&x86_diags);
-    bool x86_ok = x86_lower_machine_mod(target, &mmod, &xmod, &x86_diags);
-    if (!x86_ok) {
-        copy_diags_out(out_diags, out_diag_count, &x86_diags);
-        ny_diagnostic_list_destroy(&x86_diags);
-        x86_mod_destroy(&xmod);
-        ny_mmod_destroy(&mmod);
-        ny_context_destroy(&ctx);
-        return false;
+    bool use_aarch64_enc = (target->arch == NY_ARCH_AARCH64);
+
+    if (use_aarch64_enc) {
+        bool ok = aarch64_lower_machine_mod(target, &mmod, &aarch64_mod, &x86_diags);
+        if (!ok) {
+            copy_diags_out(out_diags, out_diag_count, &x86_diags);
+            ny_diagnostic_list_destroy(&x86_diags);
+            aarch64_mod_destroy(&aarch64_mod);
+            ny_mmod_destroy(&mmod);
+            ny_context_destroy(&ctx);
+            return false;
+        }
+    } else {
+        bool ok = x86_lower_machine_mod(target, &mmod, &xmod, &x86_diags);
+        if (!ok) {
+            copy_diags_out(out_diags, out_diag_count, &x86_diags);
+            ny_diagnostic_list_destroy(&x86_diags);
+            x86_mod_destroy(&xmod);
+            ny_mmod_destroy(&mmod);
+            ny_context_destroy(&ctx);
+            return false;
+        }
     }
     ny_diagnostic_list_destroy(&x86_diags);
 
     X86_Encoded_Module emod;
+    AArch64_Encoded_Module aarch64_emod;
     Ny_Diagnostic_List enc_diags;
     ny_diagnostic_list_init(&enc_diags);
-    bool enc_ok = x86_encode_module(&emod, &xmod, &enc_diags);
+    bool enc_ok = false;
+
+    if (use_aarch64_enc) {
+        enc_ok = aarch64_encode_module(&aarch64_emod, &aarch64_mod, &enc_diags);
+    } else {
+        enc_ok = x86_encode_module(&emod, &xmod, &enc_diags);
+    }
     if (!enc_ok) {
         copy_diags_out(out_diags, out_diag_count, &enc_diags);
         ny_diagnostic_list_destroy(&enc_diags);
-        x86_encoded_mod_destroy(&emod);
-        x86_mod_destroy(&xmod);
+        if (use_aarch64_enc) {
+            aarch64_encoded_mod_destroy(&aarch64_emod);
+            aarch64_mod_destroy(&aarch64_mod);
+        } else {
+            x86_encoded_mod_destroy(&emod);
+            x86_mod_destroy(&xmod);
+        }
         ny_mmod_destroy(&mmod);
         ny_context_destroy(&ctx);
         return false;
@@ -648,25 +738,46 @@ bool nygen_compile_encoded(const char *source_text, size_t source_len, const Nyg
 
     Nygen_Encoded_Owner *owner = (Nygen_Encoded_Owner *)ny_alloc_zero(sizeof(Nygen_Encoded_Owner));
 
-    owner->text_size = emod.text_section.count;
-    if (owner->text_size > 0) {
-        owner->text = (uint8_t *)ny_alloc(owner->text_size);
-        memcpy(owner->text, emod.text_section.bytes, owner->text_size);
-    }
-    owner->rodata_size = emod.rodata_section.count;
-    if (owner->rodata_size > 0) {
-        owner->rodata = (uint8_t *)ny_alloc(owner->rodata_size);
-        memcpy(owner->rodata, emod.rodata_section.bytes, owner->rodata_size);
-    }
-    owner->data_size = emod.data_section.count;
-    if (owner->data_size > 0) {
-        owner->data = (uint8_t *)ny_alloc(owner->data_size);
-        memcpy(owner->data, emod.data_section.bytes, owner->data_size);
+    if (use_aarch64_enc) {
+        owner->text_size = aarch64_emod.text_section.count;
+        if (owner->text_size > 0) {
+            owner->text = (uint8_t *)ny_alloc(owner->text_size);
+            memcpy(owner->text, aarch64_emod.text_section.bytes, owner->text_size);
+        }
+        owner->rodata_size = aarch64_emod.rodata_section.count;
+        if (owner->rodata_size > 0) {
+            owner->rodata = (uint8_t *)ny_alloc(owner->rodata_size);
+            memcpy(owner->rodata, aarch64_emod.rodata_section.bytes, owner->rodata_size);
+        }
+        owner->data_size = aarch64_emod.data_section.count;
+        if (owner->data_size > 0) {
+            owner->data = (uint8_t *)ny_alloc(owner->data_size);
+            memcpy(owner->data, aarch64_emod.data_section.bytes, owner->data_size);
+        }
+    } else {
+        owner->text_size = emod.text_section.count;
+        if (owner->text_size > 0) {
+            owner->text = (uint8_t *)ny_alloc(owner->text_size);
+            memcpy(owner->text, emod.text_section.bytes, owner->text_size);
+        }
+        owner->rodata_size = emod.rodata_section.count;
+        if (owner->rodata_size > 0) {
+            owner->rodata = (uint8_t *)ny_alloc(owner->rodata_size);
+            memcpy(owner->rodata, emod.rodata_section.bytes, owner->rodata_size);
+        }
+        owner->data_size = emod.data_section.count;
+        if (owner->data_size > 0) {
+            owner->data = (uint8_t *)ny_alloc(owner->data_size);
+            memcpy(owner->data, emod.data_section.bytes, owner->data_size);
+        }
     }
 
-    size_t total_symbols = emod.function_count + emod.global_count;
+    size_t total_symbols = use_aarch64_enc ? (aarch64_emod.function_count + aarch64_emod.global_count)
+                                           : (emod.function_count + emod.global_count);
+    size_t total_relocs = use_aarch64_enc ? aarch64_emod.text_section.reloc_count : emod.text_section.reloc_count;
+
     owner->symbol_count = total_symbols;
-    owner->name_count = total_symbols + emod.text_section.reloc_count;
+    owner->name_count = total_symbols + total_relocs;
 
     if (total_symbols > 0) {
         owner->symbols = (Nygen_JIT_Symbol *)ny_alloc_zero(total_symbols * sizeof(Nygen_JIT_Symbol));
@@ -678,43 +789,89 @@ bool nygen_compile_encoded(const char *source_text, size_t source_len, const Nyg
     size_t sym_idx = 0;
     size_t name_idx = 0;
 
-    for (size_t i = 0; i < emod.function_count; i++) {
-        const X86_Function_Code *fn = &emod.functions[i];
-        char *name = dup_ny_string(fn->name);
-        owner->names[name_idx++] = name;
-        owner->symbols[sym_idx].name = name;
-        owner->symbols[sym_idx].kind = NYGEN_SYM_FUNCTION;
-        owner->symbols[sym_idx].offset = fn->offset;
-        owner->symbols[sym_idx].size = fn->size;
-        sym_idx++;
+    if (use_aarch64_enc) {
+        for (size_t i = 0; i < aarch64_emod.function_count; i++) {
+            const AArch64_Function_Code *fn = &aarch64_emod.functions[i];
+            char *name = dup_ny_string(fn->name);
+            owner->names[name_idx++] = name;
+            owner->symbols[sym_idx].name = name;
+            owner->symbols[sym_idx].kind = NYGEN_SYM_FUNCTION;
+            owner->symbols[sym_idx].offset = fn->offset;
+            owner->symbols[sym_idx].size = fn->size;
+            sym_idx++;
+        }
+
+        for (size_t g = 0; g < aarch64_emod.global_count; g++) {
+            const AArch64_Encoded_Global *eg = &aarch64_emod.globals[g];
+            char *name = dup_ny_string(eg->name);
+            owner->names[name_idx++] = name;
+            owner->symbols[sym_idx].name = name;
+            if (eg->kind == NY_GLOBAL_CONST) owner->symbols[sym_idx].kind = NYGEN_SYM_RODATA;
+            else if (eg->kind == NY_GLOBAL_DATA) owner->symbols[sym_idx].kind = NYGEN_SYM_DATA;
+            else owner->symbols[sym_idx].kind = NYGEN_SYM_BSS;
+            owner->symbols[sym_idx].offset = eg->offset;
+            owner->symbols[sym_idx].size = eg->size;
+            sym_idx++;
+        }
+    } else {
+        for (size_t i = 0; i < emod.function_count; i++) {
+            const X86_Function_Code *fn = &emod.functions[i];
+            char *name = dup_ny_string(fn->name);
+            owner->names[name_idx++] = name;
+            owner->symbols[sym_idx].name = name;
+            owner->symbols[sym_idx].kind = NYGEN_SYM_FUNCTION;
+            owner->symbols[sym_idx].offset = fn->offset;
+            owner->symbols[sym_idx].size = fn->size;
+            sym_idx++;
+        }
+
+        for (size_t g = 0; g < emod.global_count; g++) {
+            const X86_Encoded_Global *eg = &emod.globals[g];
+            char *name = dup_ny_string(eg->name);
+            owner->names[name_idx++] = name;
+            owner->symbols[sym_idx].name = name;
+            if (eg->kind == NY_GLOBAL_CONST) owner->symbols[sym_idx].kind = NYGEN_SYM_RODATA;
+            else if (eg->kind == NY_GLOBAL_DATA) owner->symbols[sym_idx].kind = NYGEN_SYM_DATA;
+            else owner->symbols[sym_idx].kind = NYGEN_SYM_BSS;
+            owner->symbols[sym_idx].offset = eg->offset;
+            owner->symbols[sym_idx].size = eg->size;
+            sym_idx++;
+        }
     }
 
-    for (size_t g = 0; g < emod.global_count; g++) {
-        const X86_Encoded_Global *eg = &emod.globals[g];
-        char *name = dup_ny_string(eg->name);
-        owner->names[name_idx++] = name;
-        owner->symbols[sym_idx].name = name;
-        if (eg->kind == NY_GLOBAL_CONST) owner->symbols[sym_idx].kind = NYGEN_SYM_RODATA;
-        else if (eg->kind == NY_GLOBAL_DATA) owner->symbols[sym_idx].kind = NYGEN_SYM_DATA;
-        else owner->symbols[sym_idx].kind = NYGEN_SYM_BSS;
-        owner->symbols[sym_idx].offset = eg->offset;
-        owner->symbols[sym_idx].size = eg->size;
-        sym_idx++;
-    }
-
-    owner->reloc_count = emod.text_section.reloc_count;
+    owner->reloc_count = total_relocs;
     if (owner->reloc_count > 0) {
         owner->relocs = (Nygen_JIT_Reloc *)ny_alloc_zero(owner->reloc_count * sizeof(Nygen_JIT_Reloc));
     }
 
-    for (size_t r = 0; r < emod.text_section.reloc_count; r++) {
-        const X86_Relocation *reloc = &emod.text_section.relocs[r];
-        char *name = dup_ny_string(reloc->symbol_name);
-        owner->names[name_idx++] = name;
-        owner->relocs[r].kind = (reloc->kind == X86_FIXUP_CALL_REL32) ? NYGEN_RELOC_CALL_REL32 : NYGEN_RELOC_GLOBAL_REL32;
-        owner->relocs[r].code_offset = reloc->code_offset;
-        owner->relocs[r].symbol_name = name;
-        owner->relocs[r].addend = reloc->addend;
+    if (use_aarch64_enc) {
+        for (size_t r = 0; r < aarch64_emod.text_section.reloc_count; r++) {
+            const AArch64_Relocation *reloc = &aarch64_emod.text_section.relocs[r];
+            char *name = dup_ny_string(reloc->symbol_name);
+            owner->names[name_idx++] = name;
+            Nygen_Reloc_Kind rk;
+            switch (reloc->kind) {
+            case AARCH64_FIXUP_CALL26: rk = NYGEN_RELOC_AARCH64_CALL26; break;
+            case AARCH64_FIXUP_ADRP: rk = NYGEN_RELOC_AARCH64_ADRP; break;
+            case AARCH64_FIXUP_ADD_LO12: rk = NYGEN_RELOC_AARCH64_ADD_LO12; break;
+            case AARCH64_FIXUP_LDST_LO12: rk = NYGEN_RELOC_AARCH64_LDST_LO12; break;
+            default: rk = NYGEN_RELOC_AARCH64_CALL26; break;
+            }
+            owner->relocs[r].kind = rk;
+            owner->relocs[r].code_offset = reloc->code_offset;
+            owner->relocs[r].symbol_name = name;
+            owner->relocs[r].addend = reloc->addend;
+        }
+    } else {
+        for (size_t r = 0; r < emod.text_section.reloc_count; r++) {
+            const X86_Relocation *reloc = &emod.text_section.relocs[r];
+            char *name = dup_ny_string(reloc->symbol_name);
+            owner->names[name_idx++] = name;
+            owner->relocs[r].kind = (reloc->kind == X86_FIXUP_CALL_REL32) ? NYGEN_RELOC_CALL_REL32 : NYGEN_RELOC_GLOBAL_REL32;
+            owner->relocs[r].code_offset = reloc->code_offset;
+            owner->relocs[r].symbol_name = name;
+            owner->relocs[r].addend = reloc->addend;
+        }
     }
 
     out_module->text = owner->text;
@@ -723,15 +880,20 @@ bool nygen_compile_encoded(const char *source_text, size_t source_len, const Nyg
     out_module->rodata_size = owner->rodata_size;
     out_module->data = owner->data;
     out_module->data_size = owner->data_size;
-    out_module->bss_size = emod.bss_size;
+    out_module->bss_size = use_aarch64_enc ? aarch64_emod.bss_size : emod.bss_size;
     out_module->symbols = owner->symbols;
     out_module->symbol_count = owner->symbol_count;
     out_module->relocs = owner->relocs;
     out_module->reloc_count = owner->reloc_count;
     out_module->internal = owner;
 
-    x86_encoded_mod_destroy(&emod);
-    x86_mod_destroy(&xmod);
+    if (use_aarch64_enc) {
+        aarch64_encoded_mod_destroy(&aarch64_emod);
+        aarch64_mod_destroy(&aarch64_mod);
+    } else {
+        x86_encoded_mod_destroy(&emod);
+        x86_mod_destroy(&xmod);
+    }
     ny_mmod_destroy(&mmod);
     ny_context_destroy(&ctx);
     return true;

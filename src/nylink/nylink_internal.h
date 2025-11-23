@@ -117,6 +117,8 @@ struct Nylink_Context {
     uint64_t image_base;
     uint64_t total_file_size;
 
+    uint16_t machine; /* ELF e_machine value (EM_X86_64=62 or EM_AARCH64=183) */
+
     /* Dynamic linking support (ELF ET_DYN / PIE / ET_EXEC with shared inputs) */
     bool is_shared;
     bool uses_dynamic;

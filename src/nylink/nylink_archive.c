@@ -142,7 +142,7 @@ static void index_symbols_from_elf(Nylink_Archive *arch, const uint8_t *data, si
 
     uint16_t e_type = (uint16_t)(data[16] | (data[17] << 8));
     uint16_t e_machine = (uint16_t)(data[18] | (data[19] << 8));
-    if (e_type != 1 || e_machine != 62) return;
+    if (e_type != 1 || (e_machine != 62 && e_machine != 183)) return;
 
     uint64_t shoff = 0;
     memcpy(&shoff, data + 40, sizeof(uint64_t));

@@ -176,13 +176,23 @@ bool nyjit_link(Nyjit_Module *jit, const Nygen_Encoded_Module *mod,
     size_t bss_size = mod->bss_size;
 
     size_t external_call_count = 0;
+    bool has_aarch64_relocs = false;
     for (size_t r = 0; r < mod->reloc_count; r++) {
-        if (mod->relocs[r].kind == NYGEN_RELOC_CALL_REL32 &&
+        Nygen_Reloc_Kind rk = mod->relocs[r].kind;
+        if (rk == NYGEN_RELOC_CALL_REL32 &&
             !is_internal_symbol(mod, mod->relocs[r].symbol_name)) {
             external_call_count++;
         }
+        if (rk == NYGEN_RELOC_AARCH64_CALL26 &&
+            !is_internal_symbol(mod, mod->relocs[r].symbol_name)) {
+            external_call_count++;
+        }
+        if (rk >= NYGEN_RELOC_AARCH64_CALL26) {
+            has_aarch64_relocs = true;
+        }
     }
-    size_t trampoline_area = external_call_count * 12;
+    size_t trampoline_entry_size = has_aarch64_relocs ? 20 : 12;
+    size_t trampoline_area = external_call_count * trampoline_entry_size;
     size_t text_aligned = align_up(text_size + trampoline_area, page_size);
     size_t rodata_aligned = align_up(rodata_size, page_size);
     size_t data_aligned = align_up(data_size + bss_size, page_size);
@@ -216,7 +226,12 @@ bool nyjit_link(Nyjit_Module *jit, const Nygen_Encoded_Module *mod,
             reloc_success = false;
             break;
         }
-        if (reloc->kind != NYGEN_RELOC_CALL_REL32 && reloc->kind != NYGEN_RELOC_GLOBAL_REL32) {
+
+        Nygen_Reloc_Kind rk = reloc->kind;
+        bool is_x86 = (rk == NYGEN_RELOC_CALL_REL32 || rk == NYGEN_RELOC_GLOBAL_REL32);
+        bool is_aarch64 = (rk == NYGEN_RELOC_AARCH64_CALL26 || rk == NYGEN_RELOC_AARCH64_ADRP ||
+                           rk == NYGEN_RELOC_AARCH64_ADD_LO12 || rk == NYGEN_RELOC_AARCH64_LDST_LO12);
+        if (!is_x86 && !is_aarch64) {
             add_diag(out_diags, out_diag_count, "unsupported relocation kind in JIT");
             reloc_success = false;
             break;
@@ -241,43 +256,120 @@ bool nyjit_link(Nyjit_Module *jit, const Nygen_Encoded_Module *mod,
         }
 
         uint8_t *patch_site = text_base + reloc->code_offset;
-        uint8_t *next_inst = patch_site + 4;
-        int64_t disp64;
 
-        if (is_external && reloc->kind == NYGEN_RELOC_CALL_REL32) {
-            if (trampoline_offset + 12 > text_size + trampoline_area) {
-                add_diag(out_diags, out_diag_count, "JIT trampoline space exhausted");
+        if (is_aarch64) {
+            uint64_t S = (uint64_t)(uintptr_t)target_addr + (uint64_t)reloc->addend;
+            uint64_t P = (uint64_t)(uintptr_t)patch_site;
+
+            if (rk == NYGEN_RELOC_AARCH64_CALL26) {
+                int64_t disp64 = (int64_t)(S - P);
+                int64_t imm26 = disp64 >> 2;
+                if (imm26 < -(1LL << 25) || imm26 >= (1LL << 25)) {
+                    if (is_external) {
+                        if (trampoline_offset + trampoline_entry_size > text_size + trampoline_area) {
+                            add_diag(out_diags, out_diag_count, "JIT trampoline space exhausted");
+                            reloc_success = false;
+                            break;
+                        }
+                        uint8_t *tramp = text_base + trampoline_offset;
+                        uint32_t ldr = 0x58000050u;
+                        memcpy(tramp, &ldr, 4);
+                        memcpy(tramp + 4, &S, 8);
+                        uint32_t br = 0xD61F0200;
+                        memcpy(tramp + 12, &br, 4);
+                        memset(tramp + 16, 0, 4);
+                        trampoline_offset += trampoline_entry_size;
+
+                        int64_t tramp_disp = (int64_t)((uintptr_t)tramp - P);
+                        int64_t tramp_imm26 = tramp_disp >> 2;
+                        uint32_t word = (uint32_t)patch_site[0]
+                            | ((uint32_t)patch_site[1] << 8)
+                            | ((uint32_t)patch_site[2] << 16)
+                            | ((uint32_t)patch_site[3] << 24);
+                        word = (word & ~0x03FFFFFFu) | ((uint32_t)tramp_imm26 & 0x03FFFFFFu);
+                        memcpy(patch_site, &word, 4);
+                        continue;
+                    }
+                    char err_buf[256];
+                    snprintf(err_buf, sizeof(err_buf), "symbol '%s' address exceeds AArch64 BL ±128MB range", sym_name);
+                    add_diag(out_diags, out_diag_count, err_buf);
+                    reloc_success = false;
+                    break;
+                }
+                uint32_t word = (uint32_t)patch_site[0]
+                    | ((uint32_t)patch_site[1] << 8)
+                    | ((uint32_t)patch_site[2] << 16)
+                    | ((uint32_t)patch_site[3] << 24);
+                word = (word & ~0x03FFFFFFu) | ((uint32_t)imm26 & 0x03FFFFFFu);
+                memcpy(patch_site, &word, 4);
+            } else if (rk == NYGEN_RELOC_AARCH64_ADRP) {
+                int64_t page_diff = (int64_t)((S & ~0xFFFULL) - (P & ~0xFFFULL));
+                int64_t imm = page_diff >> 12;
+                uint32_t word = (uint32_t)patch_site[0]
+                    | ((uint32_t)patch_site[1] << 8)
+                    | ((uint32_t)patch_site[2] << 16)
+                    | ((uint32_t)patch_site[3] << 24);
+                uint32_t immlo = (uint32_t)(imm & 0x3);
+                uint32_t immhi = (uint32_t)((imm >> 2) & 0x7FFFF);
+                word = (word & ~0x9000001Fu) | (immlo << 29) | (immhi << 5);
+                memcpy(patch_site, &word, 4);
+            } else if (rk == NYGEN_RELOC_AARCH64_ADD_LO12) {
+                uint32_t imm12 = (uint32_t)(S & 0xFFF);
+                uint32_t word = (uint32_t)patch_site[0]
+                    | ((uint32_t)patch_site[1] << 8)
+                    | ((uint32_t)patch_site[2] << 16)
+                    | ((uint32_t)patch_site[3] << 24);
+                word = (word & ~0x3FFC00u) | (imm12 << 10);
+                memcpy(patch_site, &word, 4);
+            } else if (rk == NYGEN_RELOC_AARCH64_LDST_LO12) {
+                uint32_t word = (uint32_t)patch_site[0]
+                    | ((uint32_t)patch_site[1] << 8)
+                    | ((uint32_t)patch_site[2] << 16)
+                    | ((uint32_t)patch_site[3] << 24);
+                uint32_t scale = (word & 0x40000000u) ? 8 : 4;
+                uint32_t imm12 = (uint32_t)((S & 0xFFF) / scale);
+                word = (word & ~0x3FFC00u) | (imm12 << 10);
+                memcpy(patch_site, &word, 4);
+            }
+        } else {
+            uint8_t *next_inst = patch_site + 4;
+            int64_t disp64;
+
+            if (is_external && rk == NYGEN_RELOC_CALL_REL32) {
+                if (trampoline_offset + trampoline_entry_size > text_size + trampoline_area) {
+                    add_diag(out_diags, out_diag_count, "JIT trampoline space exhausted");
+                    reloc_success = false;
+                    break;
+                }
+                uint8_t *tramp = text_base + trampoline_offset;
+                uint64_t abs_addr = (uint64_t)(uintptr_t)target_addr + (uint64_t)reloc->addend;
+                tramp[0] = 0x48;
+                tramp[1] = 0xB8;
+                for (size_t i = 0; i < 8; i++) {
+                    tramp[2 + i] = (uint8_t)((abs_addr >> (i * 8)) & 0xFF);
+                }
+                tramp[10] = 0xFF;
+                tramp[11] = 0xE0;
+                trampoline_offset += trampoline_entry_size;
+                disp64 = (int64_t)((intptr_t)tramp - (intptr_t)next_inst);
+            } else {
+                disp64 = (int64_t)((intptr_t)target_addr + reloc->addend - (intptr_t)next_inst);
+            }
+
+            if (disp64 < (int64_t)INT32_MIN || disp64 > (int64_t)INT32_MAX) {
+                char err_buf[256];
+                snprintf(err_buf, sizeof(err_buf), "symbol '%s' address exceeds 32-bit relative displacement limit", sym_name);
+                add_diag(out_diags, out_diag_count, err_buf);
                 reloc_success = false;
                 break;
             }
-            uint8_t *tramp = text_base + trampoline_offset;
-            uint64_t abs_addr = (uint64_t)(uintptr_t)target_addr + (uint64_t)reloc->addend;
-            tramp[0] = 0x48;
-            tramp[1] = 0xB8;
-            for (size_t i = 0; i < 8; i++) {
-                tramp[2 + i] = (uint8_t)((abs_addr >> (i * 8)) & 0xFF);
-            }
-            tramp[10] = 0xFF;
-            tramp[11] = 0xE0;
-            trampoline_offset += 12;
-            disp64 = (int64_t)((intptr_t)tramp - (intptr_t)next_inst);
-        } else {
-            disp64 = (int64_t)((intptr_t)target_addr + reloc->addend - (intptr_t)next_inst);
-        }
 
-        if (disp64 < (int64_t)INT32_MIN || disp64 > (int64_t)INT32_MAX) {
-            char err_buf[256];
-            snprintf(err_buf, sizeof(err_buf), "symbol '%s' address exceeds 32-bit relative displacement limit", sym_name);
-            add_diag(out_diags, out_diag_count, err_buf);
-            reloc_success = false;
-            break;
+            int32_t disp32 = (int32_t)disp64;
+            patch_site[0] = (uint8_t)(disp32 & 0xFF);
+            patch_site[1] = (uint8_t)((disp32 >> 8) & 0xFF);
+            patch_site[2] = (uint8_t)((disp32 >> 16) & 0xFF);
+            patch_site[3] = (uint8_t)((disp32 >> 24) & 0xFF);
         }
-
-        int32_t disp32 = (int32_t)disp64;
-        patch_site[0] = (uint8_t)(disp32 & 0xFF);
-        patch_site[1] = (uint8_t)((disp32 >> 8) & 0xFF);
-        patch_site[2] = (uint8_t)((disp32 >> 16) & 0xFF);
-        patch_site[3] = (uint8_t)((disp32 >> 24) & 0xFF);
     }
 
     if (!reloc_success) {

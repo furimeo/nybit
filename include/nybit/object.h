@@ -6,6 +6,7 @@
 #include "nybit/support.h"
 #include "nybit/target.h"
 #include "nybit/x86_encode.h"
+#include "nybit/aarch64_encode.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,8 +32,9 @@ void ny_obj_buf_align_to(Ny_Object_Buffer *buf, size_t alignment);
 
 bool ny_emit_elf64_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *emod, Ny_Diagnostic_List *diags);
 bool ny_emit_coff_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *emod, Ny_Diagnostic_List *diags);
+bool ny_emit_elf64_aarch64(Ny_Object_Buffer *out_buf, const AArch64_Encoded_Module *emod, Ny_Diagnostic_List *diags);
 
-bool ny_emit_object_module(Ny_Object_Buffer *out_buf, const Ny_Target *target, const X86_Encoded_Module *emod, Ny_Diagnostic_List *diags);
+bool ny_emit_object_module(Ny_Object_Buffer *out_buf, const Ny_Target *target, const void *encoded_mod, Ny_Diagnostic_List *diags);
 
 bool ny_link_executable(const char *obj_path, const char *out_exe_path, const Ny_Target *target, Ny_Diagnostic_List *diags);
 bool ny_link_executable_with_extra(const char *const *obj_paths, size_t obj_count, const char *out_exe_path, const Ny_Target *target, Ny_Diagnostic_List *diags);

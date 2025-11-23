@@ -52,13 +52,9 @@ void ny_obj_buf_align_to(Ny_Object_Buffer *buf, size_t alignment) {
     }
 }
 
-bool ny_emit_object_module(Ny_Object_Buffer *out_buf, const Ny_Target *target, const X86_Encoded_Module *emod, Ny_Diagnostic_List *diags) {
+bool ny_emit_object_module(Ny_Object_Buffer *out_buf, const Ny_Target *target, const void *encoded_mod, Ny_Diagnostic_List *diags) {
     if (target && target->emit_object) {
-        return target->emit_object(target, emod, out_buf, diags);
+        return target->emit_object(target, encoded_mod, out_buf, diags);
     }
-
-    if (target && target->abi == NY_ABI_SYSV_AMD64) {
-        return ny_emit_elf64_x86_64(out_buf, emod, diags);
-    }
-    return ny_emit_coff_x86_64(out_buf, emod, diags);
+    return false;
 }

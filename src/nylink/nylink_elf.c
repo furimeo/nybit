@@ -15,6 +15,7 @@
 #define ET_REL 1
 #define ET_DYN 3
 #define EM_X86_64 62
+#define EM_AARCH64 183
 
 #define SHT_NULL 0
 #define SHT_PROGBITS 1
@@ -53,6 +54,15 @@
 #define R_X86_64_GOTPCREL 9
 #define R_X86_64_GOTPCRELX 41
 #define R_X86_64_REX_GOTPCRELX 42
+
+#define R_AARCH64_NONE 0
+#define R_AARCH64_ABS64 257
+#define R_AARCH64_ADR_PREL_PG_HI21 275
+#define R_AARCH64_ADD_ABS_LO12_NC 276
+#define R_AARCH64_JUMP26 282
+#define R_AARCH64_CALL26 283
+#define R_AARCH64_LDST64_ABS_LO12_NC 298
+#define R_AARCH64_LDST32_ABS_LO12_NC 299
 
 #pragma pack(push, 1)
 typedef struct Elf64_Ehdr {
@@ -150,8 +160,15 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
         return false;
     }
 
-    if (ehdr->e_machine != EM_X86_64) {
-        nylink_diag_add(ctx, "unsupported object format: machine is not x86_64", obj->name, nullptr);
+    if (ehdr->e_machine != EM_X86_64 && ehdr->e_machine != EM_AARCH64) {
+        nylink_diag_add(ctx, "unsupported object format: machine is not x86_64 or aarch64", obj->name, nullptr);
+        return false;
+    }
+
+    if (ctx->machine == 0) {
+        ctx->machine = ehdr->e_machine;
+    } else if (ctx->machine != ehdr->e_machine) {
+        nylink_diag_add(ctx, "architecture mismatch: object machine type does not match previous objects", obj->name, nullptr);
         return false;
     }
 
@@ -386,11 +403,21 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
                 }
 
                 Nylink_Reloc_Type rtype = NYLINK_RELOC_NONE;
-                if (type == R_X86_64_64) rtype = NYLINK_RELOC_X86_64_64;
-                else if (type == R_X86_64_PC32) rtype = NYLINK_RELOC_X86_64_PC32;
-                else if (type == R_X86_64_PLT32) rtype = NYLINK_RELOC_X86_64_PLT32;
-                else if (type == R_X86_64_GOTPCREL || type == R_X86_64_GOTPCRELX || type == R_X86_64_REX_GOTPCRELX) {
-                    rtype = NYLINK_RELOC_X86_64_GOTPCREL;
+                if (ehdr->e_machine == EM_AARCH64) {
+                    if (type == R_AARCH64_CALL26) rtype = NYLINK_RELOC_AARCH64_CALL26;
+                    else if (type == R_AARCH64_JUMP26) rtype = NYLINK_RELOC_AARCH64_JUMP26;
+                    else if (type == R_AARCH64_ADR_PREL_PG_HI21) rtype = NYLINK_RELOC_AARCH64_ADR_PREL_PG_HI21;
+                    else if (type == R_AARCH64_ADD_ABS_LO12_NC) rtype = NYLINK_RELOC_AARCH64_ADD_ABS_LO12_NC;
+                    else if (type == R_AARCH64_LDST64_ABS_LO12_NC) rtype = NYLINK_RELOC_AARCH64_LDST64_ABS_LO12_NC;
+                    else if (type == R_AARCH64_LDST32_ABS_LO12_NC) rtype = NYLINK_RELOC_AARCH64_LDST32_ABS_LO12_NC;
+                    else if (type == R_AARCH64_ABS64) rtype = NYLINK_RELOC_AARCH64_ABS64;
+                } else {
+                    if (type == R_X86_64_64) rtype = NYLINK_RELOC_X86_64_64;
+                    else if (type == R_X86_64_PC32) rtype = NYLINK_RELOC_X86_64_PC32;
+                    else if (type == R_X86_64_PLT32) rtype = NYLINK_RELOC_X86_64_PLT32;
+                    else if (type == R_X86_64_GOTPCREL || type == R_X86_64_GOTPCRELX || type == R_X86_64_REX_GOTPCRELX) {
+                        rtype = NYLINK_RELOC_X86_64_GOTPCREL;
+                    }
                 }
 
                 uint32_t nylink_sym_id = UINT32_MAX;
@@ -430,8 +457,15 @@ bool nylink_read_elf_so(Nylink_Context *ctx, uint32_t obj_idx) {
     size_t size = obj->size;
 
     const Elf64_Ehdr *ehdr = (const Elf64_Ehdr *)data;
-    if (ehdr->e_machine != EM_X86_64) {
-        nylink_diag_add(ctx, "unsupported shared library format: machine is not x86_64", obj->name, nullptr);
+    if (ehdr->e_machine != EM_X86_64 && ehdr->e_machine != EM_AARCH64) {
+        nylink_diag_add(ctx, "unsupported shared library format: machine is not x86_64 or aarch64", obj->name, nullptr);
+        return false;
+    }
+
+    if (ctx->machine == 0) {
+        ctx->machine = ehdr->e_machine;
+    } else if (ctx->machine != ehdr->e_machine) {
+        nylink_diag_add(ctx, "architecture mismatch: shared library machine type does not match previous objects", obj->name, nullptr);
         return false;
     }
 

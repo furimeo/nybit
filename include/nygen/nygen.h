@@ -79,6 +79,10 @@ typedef enum Nygen_Symbol_Kind {
 typedef enum Nygen_Reloc_Kind {
     NYGEN_RELOC_CALL_REL32 = 0,
     NYGEN_RELOC_GLOBAL_REL32,
+    NYGEN_RELOC_AARCH64_CALL26,
+    NYGEN_RELOC_AARCH64_ADRP,
+    NYGEN_RELOC_AARCH64_ADD_LO12,
+    NYGEN_RELOC_AARCH64_LDST_LO12,
 } Nygen_Reloc_Kind;
 
 typedef struct Nygen_JIT_Symbol {

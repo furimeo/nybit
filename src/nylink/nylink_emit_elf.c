@@ -15,6 +15,7 @@
 #define ET_EXEC 2
 #define ET_DYN 3
 #define EM_X86_64 62
+#define EM_AARCH64 183
 
 #define PT_LOAD 1
 #define PT_DYNAMIC 2
@@ -591,7 +592,7 @@ bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, cons
     ehdr.e_ident[5] = ELFDATA2LSB;
     ehdr.e_ident[6] = EV_CURRENT;
     ehdr.e_type = (ctx->output_mode == NYLINK_OUTPUT_PIE || ctx->output_mode == NYLINK_OUTPUT_SHARED) ? ET_DYN : ET_EXEC;
-    ehdr.e_machine = EM_X86_64;
+    ehdr.e_machine = (ctx->machine == EM_AARCH64) ? EM_AARCH64 : EM_X86_64;
     ehdr.e_version = EV_CURRENT;
     ehdr.e_entry = ctx->entry_point_va;
     ehdr.e_phoff = sizeof(Elf64_Ehdr);

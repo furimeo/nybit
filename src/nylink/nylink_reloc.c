@@ -9,6 +9,14 @@
 #define R_X86_64_JUMP_SLOT 7
 #define R_X86_64_RELATIVE 8
 
+#define R_AARCH64_ABS64 257
+#define R_AARCH64_GLOB_DAT 1025
+#define R_AARCH64_JUMP_SLOT 1026
+#define R_AARCH64_RELATIVE 1027
+
+#define EM_X86_64 62
+#define EM_AARCH64 183
+
 static void write_word64(uint8_t *ptr, uint64_t val) {
     ptr[0] = (uint8_t)(val & 0xFF);
     ptr[1] = (uint8_t)((val >> 8) & 0xFF);
@@ -86,15 +94,20 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
             ctx->plt_data_capacity = ctx->plt_file_size;
             ctx->plt_data = (uint8_t *)ny_alloc_zero(ctx->plt_data_capacity);
 
-            uint8_t *p0 = ctx->plt_data;
-            int32_t disp1 = (int32_t)((int64_t)(ctx->got_plt_va + 8) - (int64_t)(ctx->plt_va + 6));
-            int32_t disp2 = (int32_t)((int64_t)(ctx->got_plt_va + 16) - (int64_t)(ctx->plt_va + 12));
+            if (ctx->machine == EM_AARCH64) {
+                uint8_t *p0 = ctx->plt_data;
+                memset(p0, 0, 32);
+            } else {
+                uint8_t *p0 = ctx->plt_data;
+                int32_t disp1 = (int32_t)((int64_t)(ctx->got_plt_va + 8) - (int64_t)(ctx->plt_va + 6));
+                int32_t disp2 = (int32_t)((int64_t)(ctx->got_plt_va + 16) - (int64_t)(ctx->plt_va + 12));
 
-            p0[0] = 0xFF; p0[1] = 0x35;
-            memcpy(&p0[2], &disp1, 4);
-            p0[6] = 0xFF; p0[7] = 0x25;
-            memcpy(&p0[8], &disp2, 4);
-            p0[12] = 0x0F; p0[13] = 0x1F; p0[14] = 0x44; p0[15] = 0x00;
+                p0[0] = 0xFF; p0[1] = 0x35;
+                memcpy(&p0[2], &disp1, 4);
+                p0[6] = 0xFF; p0[7] = 0x25;
+                memcpy(&p0[8], &disp2, 4);
+                p0[12] = 0x0F; p0[13] = 0x1F; p0[14] = 0x44; p0[15] = 0x00;
+            }
         }
 
         for (size_t i = 0; i < ctx->import_count; i++) {
@@ -102,43 +115,88 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
 
             uint32_t plt_idx = ctx->import_plt_idx[i];
             if (plt_idx != UINT32_MAX && ctx->plt_data && ctx->got_plt_data && ctx->rela_plt_data) {
-                uint64_t entry_va = ctx->plt_va + 16 + (uint64_t)plt_idx * 16;
-                uint64_t slot_va = ctx->got_plt_va + 24 + (uint64_t)plt_idx * 8;
+                if (ctx->machine == EM_AARCH64) {
+                    uint64_t entry_va = ctx->plt_va + 32 + (uint64_t)plt_idx * 16;
+                    uint64_t slot_va = ctx->got_plt_va + 24 + (uint64_t)plt_idx * 8;
 
-                ((uint64_t *)ctx->got_plt_data)[3 + plt_idx] = entry_va + 6;
+                    ((uint64_t *)ctx->got_plt_data)[3 + plt_idx] = entry_va;
 
-                uint8_t *pe = ctx->plt_data + 16 + (size_t)plt_idx * 16;
-                int32_t jmp_disp = (int32_t)((int64_t)slot_va - (int64_t)(entry_va + 6));
-                int32_t plt0_disp = (int32_t)((int64_t)ctx->plt_va - (int64_t)(entry_va + 16));
+                    uint8_t *pe = ctx->plt_data + 32 + (size_t)plt_idx * 16;
+                    int64_t disp = (int64_t)slot_va - (int64_t)entry_va;
+                    int64_t page_diff = (disp & ~0xFFFULL) >> 12;
+                    uint32_t immlo = (uint32_t)(page_diff & 0x3);
+                    uint32_t immhi = (uint32_t)((page_diff >> 2) & 0x7FFFF);
 
-                pe[0] = 0xFF; pe[1] = 0x25;
-                memcpy(&pe[2], &jmp_disp, 4);
-                pe[6] = 0x68;
-                uint32_t reloc_index = plt_idx;
-                memcpy(&pe[7], &reloc_index, 4);
-                pe[11] = 0xE9;
-                memcpy(&pe[12], &plt0_disp, 4);
+                    uint32_t adrp = 0x90000011u | (immlo << 29) | (immhi << 5);
+                    memcpy(pe, &adrp, 4);
 
-                size_t rela_off = (size_t)plt_idx * 24;
-                uint64_t r_offset = slot_va;
-                uint64_t r_info = ((uint64_t)dyn_idx << 32) | R_X86_64_JUMP_SLOT;
-                int64_t zero = 0;
-                if (rela_off + 24 > ctx->rela_plt_data_capacity) {
-                    nylink_diag_add(ctx, "internal error: .rela.plt index overflow", nullptr, nullptr);
-                    if (import_dynsym_idx) {
-                        ny_free(import_dynsym_idx, ctx->import_count * sizeof(uint32_t));
+                    uint32_t lo12 = (uint32_t)(slot_va & 0xFFF) / 8;
+                    uint32_t ldr = 0xF9400211u | (lo12 << 10);
+                    memcpy(pe + 4, &ldr, 4);
+
+                    uint32_t br = 0xD61F0220;
+                    memcpy(pe + 8, &br, 4);
+
+                    memset(pe + 12, 0, 4);
+
+                    size_t rela_off = (size_t)plt_idx * 24;
+                    uint64_t r_offset = slot_va;
+                    uint64_t r_info = ((uint64_t)dyn_idx << 32) | R_AARCH64_JUMP_SLOT;
+                    int64_t zero = 0;
+                    if (rela_off + 24 > ctx->rela_plt_data_capacity) {
+                        nylink_diag_add(ctx, "internal error: .rela.plt index overflow", nullptr, nullptr);
+                        if (import_dynsym_idx) {
+                            ny_free(import_dynsym_idx, ctx->import_count * sizeof(uint32_t));
+                        }
+                        return false;
                     }
-                    return false;
+                    memcpy(ctx->rela_plt_data + rela_off, &r_offset, 8);
+                    memcpy(ctx->rela_plt_data + rela_off + 8, &r_info, 8);
+                    memcpy(ctx->rela_plt_data + rela_off + 16, &zero, 8);
+                } else {
+                    uint64_t entry_va = ctx->plt_va + 16 + (uint64_t)plt_idx * 16;
+                    uint64_t slot_va = ctx->got_plt_va + 24 + (uint64_t)plt_idx * 8;
+
+                    ((uint64_t *)ctx->got_plt_data)[3 + plt_idx] = entry_va + 6;
+
+                    uint8_t *pe = ctx->plt_data + 16 + (size_t)plt_idx * 16;
+                    int32_t jmp_disp = (int32_t)((int64_t)slot_va - (int64_t)(entry_va + 6));
+                    int32_t plt0_disp = (int32_t)((int64_t)ctx->plt_va - (int64_t)(entry_va + 16));
+
+                    pe[0] = 0xFF; pe[1] = 0x25;
+                    memcpy(&pe[2], &jmp_disp, 4);
+                    pe[6] = 0x68;
+                    uint32_t reloc_index = plt_idx;
+                    memcpy(&pe[7], &reloc_index, 4);
+                    pe[11] = 0xE9;
+                    memcpy(&pe[12], &plt0_disp, 4);
+
+                    size_t rela_off = (size_t)plt_idx * 24;
+                    uint64_t r_offset = slot_va;
+                    uint64_t r_info = ((uint64_t)dyn_idx << 32) | R_X86_64_JUMP_SLOT;
+                    int64_t zero = 0;
+                    if (rela_off + 24 > ctx->rela_plt_data_capacity) {
+                        nylink_diag_add(ctx, "internal error: .rela.plt index overflow", nullptr, nullptr);
+                        if (import_dynsym_idx) {
+                            ny_free(import_dynsym_idx, ctx->import_count * sizeof(uint32_t));
+                        }
+                        return false;
+                    }
+                    memcpy(ctx->rela_plt_data + rela_off, &r_offset, 8);
+                    memcpy(ctx->rela_plt_data + rela_off + 8, &r_info, 8);
+                    memcpy(ctx->rela_plt_data + rela_off + 16, &zero, 8);
                 }
-                memcpy(ctx->rela_plt_data + rela_off, &r_offset, 8);
-                memcpy(ctx->rela_plt_data + rela_off + 8, &r_info, 8);
-                memcpy(ctx->rela_plt_data + rela_off + 16, &zero, 8);
             }
 
             uint32_t got_idx = ctx->import_got_idx[i];
             if (got_idx != UINT32_MAX && ctx->rela_dyn_data) {
                 uint64_t slot_va = ctx->got_va + (uint64_t)got_idx * 8;
-                uint64_t r_info = ((uint64_t)dyn_idx << 32) | R_X86_64_GLOB_DAT;
+                uint64_t r_info;
+                if (ctx->machine == EM_AARCH64) {
+                    r_info = ((uint64_t)dyn_idx << 32) | R_AARCH64_GLOB_DAT;
+                } else {
+                    r_info = ((uint64_t)dyn_idx << 32) | R_X86_64_GLOB_DAT;
+                }
                 if (!push_rela_dyn(ctx->rela_dyn_data, ctx->rela_dyn_data_capacity, rela_dyn_idx++, slot_va, r_info, 0)) {
                     nylink_diag_add(ctx, "internal error: .rela.dyn index overflow", nullptr, nullptr);
                     if (import_dynsym_idx) {
@@ -286,6 +344,182 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
             }
 
             write_disp32(out_sec->data + target_sec_offset, (uint32_t)(int32_t)val);
+        } else if (reloc->type == NYLINK_RELOC_AARCH64_ABS64) {
+            if (target_sec_offset + 8 > out_sec->data_capacity || target_sec_offset + 8 > out_sec->file_size) {
+                nylink_diag_add(ctx, "relocation write out of bounds", in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            uint64_t val = 0;
+            if (plan == NYLINK_PLAN_DYN_ABS64) {
+                val = (uint64_t)reloc->addend;
+                uint64_t r_info = ((uint64_t)import_dynsym_idx[slot] << 32) | R_AARCH64_ABS64;
+                if (!push_rela_dyn(ctx->rela_dyn_data, ctx->rela_dyn_data_capacity, rela_dyn_idx++, place_va, r_info, reloc->addend)) {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "dynamic relocation overflow: symbol '%s'", sym_name);
+                    nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                    success = false;
+                    continue;
+                }
+            } else {
+                val = state->final_va + (uint64_t)reloc->addend;
+                if (plan == NYLINK_PLAN_RELATIVE) {
+                    if (!push_rela_dyn(ctx->rela_dyn_data, ctx->rela_dyn_data_capacity, rela_dyn_idx++, place_va, R_AARCH64_RELATIVE, (int64_t)val)) {
+                        char msg[256];
+                        snprintf(msg, sizeof(msg), "dynamic relocation overflow: symbol '%s'", sym_name);
+                        nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                        success = false;
+                        continue;
+                    }
+                }
+            }
+            write_word64(out_sec->data + target_sec_offset, val);
+        } else if (reloc->type == NYLINK_RELOC_AARCH64_CALL26 ||
+                   reloc->type == NYLINK_RELOC_AARCH64_JUMP26) {
+            if (target_sec_offset + 4 > out_sec->data_capacity || target_sec_offset + 4 > out_sec->file_size) {
+                nylink_diag_add(ctx, "relocation write out of bounds", in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            uint64_t target_va;
+            if (plan == NYLINK_PLAN_PLT_CALL) {
+                target_va = ctx->plt_va + 32 + (uint64_t)slot * 16;
+            } else if (state->is_defined && !state->is_dynamic) {
+                target_va = state->final_va;
+            } else if (!state->is_defined && sym->binding == NYLINK_SYM_WEAK) {
+                target_va = 0;
+            } else {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "relocation against unresolved symbol: %s", sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            int64_t val = (int64_t)(target_va + (uint64_t)reloc->addend) - (int64_t)place_va;
+            int64_t imm26 = val >> 2;
+            if (imm26 < -(1LL << 25) || imm26 >= (1LL << 25)) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "relocation overflow: CALL26/JUMP26 offset %lld out of ±128MB range for symbol '%s'", (long long)val, sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            uint32_t word = (uint32_t)out_sec->data[target_sec_offset]
+                | ((uint32_t)out_sec->data[target_sec_offset + 1] << 8)
+                | ((uint32_t)out_sec->data[target_sec_offset + 2] << 16)
+                | ((uint32_t)out_sec->data[target_sec_offset + 3] << 24);
+            word = (word & ~0x03FFFFFFu) | ((uint32_t)imm26 & 0x03FFFFFFu);
+            write_disp32(out_sec->data + target_sec_offset, word);
+        } else if (reloc->type == NYLINK_RELOC_AARCH64_ADR_PREL_PG_HI21) {
+            if (target_sec_offset + 4 > out_sec->data_capacity || target_sec_offset + 4 > out_sec->file_size) {
+                nylink_diag_add(ctx, "relocation write out of bounds", in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            uint64_t target_va;
+            if (plan == NYLINK_PLAN_GOT_LOAD) {
+                target_va = ctx->got_va + (uint64_t)slot * 8;
+            } else if (state->is_defined && !state->is_dynamic) {
+                target_va = state->final_va;
+            } else if (!state->is_defined && sym->binding == NYLINK_SYM_WEAK) {
+                target_va = 0;
+            } else {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "relocation against unresolved symbol: %s", sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            uint64_t S = target_va + (uint64_t)reloc->addend;
+            uint64_t P = place_va;
+            int64_t page_diff = (int64_t)((S & ~0xFFFULL) - (P & ~0xFFFULL));
+            int64_t imm = page_diff >> 12;
+            if (imm < -(1LL << 20) || imm >= (1LL << 20)) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "relocation overflow: ADRP page offset %lld out of ±4GB range for symbol '%s'", (long long)page_diff, sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            uint32_t word = (uint32_t)out_sec->data[target_sec_offset]
+                | ((uint32_t)out_sec->data[target_sec_offset + 1] << 8)
+                | ((uint32_t)out_sec->data[target_sec_offset + 2] << 16)
+                | ((uint32_t)out_sec->data[target_sec_offset + 3] << 24);
+            uint32_t immlo = (uint32_t)imm & 0x3;
+            uint32_t immhi = (uint32_t)((imm >> 2) & 0x7FFFF);
+            word = (word & ~0x9000001Fu) | (immlo << 29) | (immhi << 5);
+            write_disp32(out_sec->data + target_sec_offset, word);
+        } else if (reloc->type == NYLINK_RELOC_AARCH64_ADD_ABS_LO12_NC) {
+            if (target_sec_offset + 4 > out_sec->data_capacity || target_sec_offset + 4 > out_sec->file_size) {
+                nylink_diag_add(ctx, "relocation write out of bounds", in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            uint64_t target_va;
+            if (plan == NYLINK_PLAN_GOT_LOAD) {
+                target_va = ctx->got_va + (uint64_t)slot * 8;
+            } else if (state->is_defined && !state->is_dynamic) {
+                target_va = state->final_va;
+            } else if (!state->is_defined && sym->binding == NYLINK_SYM_WEAK) {
+                target_va = 0;
+            } else {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "relocation against unresolved symbol: %s", sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            uint64_t S = target_va + (uint64_t)reloc->addend;
+            uint32_t imm12 = (uint32_t)(S & 0xFFF);
+
+            uint32_t word = (uint32_t)out_sec->data[target_sec_offset]
+                | ((uint32_t)out_sec->data[target_sec_offset + 1] << 8)
+                | ((uint32_t)out_sec->data[target_sec_offset + 2] << 16)
+                | ((uint32_t)out_sec->data[target_sec_offset + 3] << 24);
+            word = (word & ~0x3FFC00u) | (imm12 << 10);
+            write_disp32(out_sec->data + target_sec_offset, word);
+        } else if (reloc->type == NYLINK_RELOC_AARCH64_LDST64_ABS_LO12_NC ||
+                   reloc->type == NYLINK_RELOC_AARCH64_LDST32_ABS_LO12_NC) {
+            if (target_sec_offset + 4 > out_sec->data_capacity || target_sec_offset + 4 > out_sec->file_size) {
+                nylink_diag_add(ctx, "relocation write out of bounds", in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            uint64_t target_va;
+            if (plan == NYLINK_PLAN_GOT_LOAD) {
+                target_va = ctx->got_va + (uint64_t)slot * 8;
+            } else if (state->is_defined && !state->is_dynamic) {
+                target_va = state->final_va;
+            } else if (!state->is_defined && sym->binding == NYLINK_SYM_WEAK) {
+                target_va = 0;
+            } else {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "relocation against unresolved symbol: %s", sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
+
+            uint64_t S = target_va + (uint64_t)reloc->addend;
+            uint32_t scale = (reloc->type == NYLINK_RELOC_AARCH64_LDST64_ABS_LO12_NC) ? 8 : 4;
+            uint32_t imm12 = (uint32_t)((S & 0xFFF) / scale);
+
+            uint32_t word = (uint32_t)out_sec->data[target_sec_offset]
+                | ((uint32_t)out_sec->data[target_sec_offset + 1] << 8)
+                | ((uint32_t)out_sec->data[target_sec_offset + 2] << 16)
+                | ((uint32_t)out_sec->data[target_sec_offset + 3] << 24);
+            word = (word & ~0x3FFC00u) | (imm12 << 10);
+            write_disp32(out_sec->data + target_sec_offset, word);
         } else {
             char msg[256];
             snprintf(msg, sizeof(msg), "unsupported relocation type: %d", (int)reloc->type);

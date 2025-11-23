@@ -6,7 +6,6 @@
 #include "nybit/support.h"
 #include "nybit/machine.h"
 #include "nybit/target.h"
-#include "nybit/target_x86_64.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,7 +23,7 @@ typedef struct Ny_Live_Interval {
 } Ny_Live_Interval;
 
 typedef struct Ny_RegAlloc_Result {
-    uint16_t used_callee_saved_mask;
+    uint64_t used_callee_saved_mask;
     size_t spilled_count;
 } Ny_RegAlloc_Result;
 

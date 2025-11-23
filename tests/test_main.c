@@ -185,6 +185,26 @@ void test_linux_runtime_pie_aslr(void);
 void test_linux_runtime_determinism(void);
 void test_linux_runtime_readelf_inspection(void);
 
+void test_aarch64_target_registration(void);
+void test_aarch64_compile_asm(void);
+void test_aarch64_compile_bytes(void);
+void test_aarch64_compile_elf_object(void);
+void test_aarch64_compile_call_elf(void);
+void test_aarch64_compile_global_elf(void);
+void test_aarch64_compile_branch_elf(void);
+void test_aarch64_object_determinism(void);
+void test_aarch64_bytes_determinism(void);
+void test_aarch64_call_determinism(void);
+void test_aarch64_machine_ir(void);
+void test_aarch64_regalloc_spill(void);
+void test_aarch64_nylink_static_link(void);
+void test_aarch64_nylink_multi_object(void);
+void test_aarch64_nylink_determinism(void);
+void test_aarch64_nylink_unresolved_symbol(void);
+void test_aarch64_nylink_arch_mismatch(void);
+void test_aarch64_jit_compile_encoded(void);
+void test_aarch64_jit_determinism(void);
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -367,6 +387,26 @@ int main(void) {
     RUN_TEST(test_linux_runtime_pie_aslr);
     RUN_TEST(test_linux_runtime_determinism);
     RUN_TEST(test_linux_runtime_readelf_inspection);
+
+    RUN_TEST(test_aarch64_target_registration);
+    RUN_TEST(test_aarch64_compile_asm);
+    RUN_TEST(test_aarch64_compile_bytes);
+    RUN_TEST(test_aarch64_compile_elf_object);
+    RUN_TEST(test_aarch64_compile_call_elf);
+    RUN_TEST(test_aarch64_compile_global_elf);
+    RUN_TEST(test_aarch64_compile_branch_elf);
+    RUN_TEST(test_aarch64_object_determinism);
+    RUN_TEST(test_aarch64_bytes_determinism);
+    RUN_TEST(test_aarch64_call_determinism);
+    RUN_TEST(test_aarch64_machine_ir);
+    RUN_TEST(test_aarch64_regalloc_spill);
+    RUN_TEST(test_aarch64_nylink_static_link);
+    RUN_TEST(test_aarch64_nylink_multi_object);
+    RUN_TEST(test_aarch64_nylink_determinism);
+    RUN_TEST(test_aarch64_nylink_unresolved_symbol);
+    RUN_TEST(test_aarch64_nylink_arch_mismatch);
+    RUN_TEST(test_aarch64_jit_compile_encoded);
+    RUN_TEST(test_aarch64_jit_determinism);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

@@ -262,12 +262,13 @@ static int do_cli_link(int argc, char **argv) {
 #endif
 
     if (target_str) {
-        if (strcmp(target_str, "elf64") == 0 || strcmp(target_str, "elf64-x86-64") == 0 || strcmp(target_str, "x86_64-elf") == 0) {
+        if (strcmp(target_str, "elf64") == 0 || strcmp(target_str, "elf64-x86-64") == 0 || strcmp(target_str, "x86_64-elf") == 0 ||
+            strcmp(target_str, "aarch64") == 0 || strcmp(target_str, "elf64-aarch64") == 0 || strcmp(target_str, "aarch64-elf") == 0) {
             target_format = NYLINK_TARGET_ELF64;
         } else if (strcmp(target_str, "pe") == 0 || strcmp(target_str, "pe-x86-64") == 0 || strcmp(target_str, "pe32+") == 0 || strcmp(target_str, "x86_64-pe") == 0) {
             target_format = NYLINK_TARGET_PE;
         } else {
-            fprintf(stderr, "error: unsupported target format '%s' (supported: elf64, pe-x86-64)\n", target_str);
+            fprintf(stderr, "error: unsupported target format '%s' (supported: elf64, elf64-aarch64, pe-x86-64)\n", target_str);
             for (size_t k = 0; k < input_count; k++) {
                 ny_free(inputs[k].path, strlen(inputs[k].path) + 1);
             }

@@ -225,7 +225,12 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
     }
 
     if (is_elf_target && ctx->uses_dynamic && ctx->output_mode != NYLINK_OUTPUT_SHARED && !ctx->dynamic_linker) {
-        const char *default_interp = "/lib64/ld-linux-x86-64.so.2";
+        const char *default_interp;
+        if (ctx->machine == 183) {
+            default_interp = "/lib/ld-linux-aarch64.so.1";
+        } else {
+            default_interp = "/lib64/ld-linux-x86-64.so.2";
+        }
         size_t dlen = strlen(default_interp);
         ctx->dynamic_linker = (char *)ny_alloc(dlen + 1);
         memcpy(ctx->dynamic_linker, default_interp, dlen + 1);
@@ -327,7 +332,7 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
             bool weak_undef = !state->is_defined && sym->binding == NYLINK_SYM_WEAK;
 
             if (weak_undef) {
-                if (reloc->type == NYLINK_RELOC_X86_64_64) {
+                if (reloc->type == NYLINK_RELOC_X86_64_64 || reloc->type == NYLINK_RELOC_AARCH64_ABS64) {
                     size_t weak_imp = import_intern(ctx, reloc->sym_id);
                     ctx->reloc_plans[r] = NYLINK_PLAN_DYN_ABS64;
                     ctx->reloc_plan_slots[r] = (uint32_t)weak_imp;
@@ -337,7 +342,7 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
             }
 
             if (!dynamic_ref) {
-                if (reloc->type == NYLINK_RELOC_X86_64_64) {
+                if (reloc->type == NYLINK_RELOC_X86_64_64 || reloc->type == NYLINK_RELOC_AARCH64_ABS64) {
                     ctx->reloc_plans[r] = NYLINK_PLAN_RELATIVE;
                     rela_dyn_count++;
                 }
@@ -346,7 +351,7 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
 
             size_t imp = import_intern(ctx, reloc->sym_id);
 
-            if (reloc->type == NYLINK_RELOC_X86_64_64) {
+            if (reloc->type == NYLINK_RELOC_X86_64_64 || reloc->type == NYLINK_RELOC_AARCH64_ABS64) {
                 const Nylink_Section *in_sec = &ctx->sections[reloc->sec_id];
                 if (!reloc_target_is_writable(ctx, reloc)) {
                     char msg[256];
@@ -362,7 +367,11 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
                 continue;
             }
 
-            if (reloc->type == NYLINK_RELOC_X86_64_GOTPCREL) {
+            if (reloc->type == NYLINK_RELOC_X86_64_GOTPCREL ||
+                reloc->type == NYLINK_RELOC_AARCH64_ADR_PREL_PG_HI21 ||
+                reloc->type == NYLINK_RELOC_AARCH64_ADD_ABS_LO12_NC ||
+                reloc->type == NYLINK_RELOC_AARCH64_LDST64_ABS_LO12_NC ||
+                reloc->type == NYLINK_RELOC_AARCH64_LDST32_ABS_LO12_NC) {
                 if (ctx->import_got_idx[imp] == UINT32_MAX) {
                     ctx->import_got_idx[imp] = (uint32_t)got_data_count++;
                     rela_dyn_count++;
@@ -389,6 +398,14 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
                     nylink_diag_add(ctx, msg, in_sec->name, sym->name);
                     return false;
                 }
+            }
+
+            if (reloc->type == NYLINK_RELOC_AARCH64_CALL26 || reloc->type == NYLINK_RELOC_AARCH64_JUMP26) {
+                if (ctx->import_plt_idx[imp] == UINT32_MAX) {
+                    ctx->import_plt_idx[imp] = (uint32_t)plt_count++;
+                }
+                ctx->reloc_plans[r] = NYLINK_PLAN_PLT_CALL;
+                ctx->reloc_plan_slots[r] = ctx->import_plt_idx[imp];
             }
         }
     }
@@ -726,7 +743,8 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         }
 
         ctx->plt_entry_count = plt_count;
-        ctx->plt_file_size = (plt_count > 0) ? (16 + plt_count * 16) : 0;
+        uint32_t plt0_size = (ctx->machine == 183) ? 32 : 16;
+        ctx->plt_file_size = (plt_count > 0) ? (plt0_size + plt_count * 16) : 0;
         ctx->rela_plt_count = plt_count;
         ctx->rela_plt_file_size = plt_count * 24;
         ctx->got_plt_file_size = (plt_count > 0) ? ((3 + plt_count) * 8) : 0;
