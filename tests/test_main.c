@@ -212,6 +212,16 @@ void test_aarch64_pie_determinism(void);
 void test_aarch64_shared_structural_validation(void);
 void test_aarch64_exec_elf_machine_check(void);
 
+void test_aarch64_malformed_elf_rejected(void);
+void test_aarch64_wrong_machine_rejected(void);
+void test_aarch64_truncated_elf_rejected(void);
+void test_aarch64_empty_object_rejected(void);
+void test_aarch64_relocation_overflow_diagnostic(void);
+void test_aarch64_cli_link_executable(void);
+void test_aarch64_cli_link_shared(void);
+void test_aarch64_deterministic_object_across_runs(void);
+void test_aarch64_deterministic_executable_across_runs(void);
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -421,6 +431,16 @@ int main(void) {
     RUN_TEST(test_aarch64_pie_determinism);
     RUN_TEST(test_aarch64_shared_structural_validation);
     RUN_TEST(test_aarch64_exec_elf_machine_check);
+
+    RUN_TEST(test_aarch64_malformed_elf_rejected);
+    RUN_TEST(test_aarch64_wrong_machine_rejected);
+    RUN_TEST(test_aarch64_truncated_elf_rejected);
+    RUN_TEST(test_aarch64_empty_object_rejected);
+    RUN_TEST(test_aarch64_relocation_overflow_diagnostic);
+    RUN_TEST(test_aarch64_cli_link_executable);
+    RUN_TEST(test_aarch64_cli_link_shared);
+    RUN_TEST(test_aarch64_deterministic_object_across_runs);
+    RUN_TEST(test_aarch64_deterministic_executable_across_runs);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);
