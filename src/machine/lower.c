@@ -84,10 +84,23 @@ static Ny_Machine_Opcode opcode_to_mopc(Ny_Opcode op) {
     }
 }
 
-static Ny_Machine_Operand lower_operand(const Ny_Module *mod, const Ny_Function *fn, Ny_Operand op, const Ny_Machine_Reg *val_map, const Ny_Block_ID *blk_map) {
+static Ny_Machine_Operand lower_operand(const Ny_Module *mod, const Ny_Function *fn, Ny_Operand op, const Ny_Machine_Reg *val_map, const Ny_Slot_ID *val_slot_map, const Ny_Block_ID *blk_map) {
     switch (op.kind) {
-    case NY_OP_VALUE:
-        return ny_mop_reg(val_map[op.val]);
+    case NY_OP_VALUE: {
+        if (val_slot_map && val_slot_map[op.val] != NY_INVALID_SLOT) {
+            Ny_Machine_Mem_Op mem;
+            memset(&mem, 0, sizeof(mem));
+            mem.stack_slot = val_slot_map[op.val];
+            Ny_Machine_Operand mop = ny_mop_mem(mem);
+            Ny_Value *v = ny_function_get_value(fn, op.val);
+            if (v) mop.type = v->type;
+            return mop;
+        }
+        Ny_Machine_Operand mop = ny_mop_reg(val_map[op.val]);
+        Ny_Value *v = ny_function_get_value(fn, op.val);
+        if (v) mop.type = v->type;
+        return mop;
+    }
     case NY_OP_IMM_INT:
         return ny_mop_imm_int(op.imm_int);
     case NY_OP_IMM_FLOAT:
@@ -152,6 +165,8 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
 
     size_t val_map_size = fn->val_count > 0 ? fn->val_count : 1;
     Ny_Machine_Reg *val_map = (Ny_Machine_Reg *)ny_alloc_zero(val_map_size * sizeof(Ny_Machine_Reg));
+    Ny_Slot_ID *val_slot_map = (Ny_Slot_ID *)ny_alloc(val_map_size * sizeof(Ny_Slot_ID));
+    for (size_t i = 0; i < val_map_size; i++) val_slot_map[i] = NY_INVALID_SLOT;
 
     for (size_t i = 0; i < fn->val_count; i++) {
         Ny_Value *v = ny_function_get_value(fn, (Ny_Value_ID)i);
@@ -163,18 +178,35 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
                     ny_diagnostic_list_append(diags, buf);
                 }
                 ny_free(val_map, val_map_size * sizeof(Ny_Machine_Reg));
+                ny_free(val_slot_map, val_map_size * sizeof(Ny_Slot_ID));
                 ny_free(blk_map, blk_map_size * sizeof(Ny_Block_ID));
                 ny_cfg_info_destroy(&cfg);
                 return false;
             }
+            bool is_aggr = ny_type_is_aggregate(&ir_mod->types, v->type);
             if (v->kind == NY_VAL_ARGUMENT) {
-                Ny_Reg_Class rc = type_to_reg_class(&ir_mod->types, v->type);
-                Ny_Machine_Reg vreg = ny_mfunc_create_vreg(mfn, rc);
-                val_map[i] = vreg;
-                ny_mfunc_add_param(mfn, vreg);
+                if (is_aggr) {
+                    uint32_t sz = ny_type_size(&ir_mod->types, v->type);
+                    uint32_t al = ny_type_align(&ir_mod->types, v->type);
+                    Ny_Slot_ID sid = ny_mfunc_create_stack_slot(mfn, sz, al);
+                    val_slot_map[i] = sid;
+                    ny_mfunc_add_param_typed(mfn, (Ny_Machine_Reg){0}, v->type, sid);
+                } else {
+                    Ny_Reg_Class rc = type_to_reg_class(&ir_mod->types, v->type);
+                    Ny_Machine_Reg vreg = ny_mfunc_create_vreg(mfn, rc);
+                    val_map[i] = vreg;
+                    ny_mfunc_add_param_typed(mfn, vreg, v->type, NY_INVALID_SLOT);
+                }
             } else if (v->kind == NY_VAL_INSTRUCTION || v->kind == NY_VAL_CONSTANT) {
-                Ny_Reg_Class rc = type_to_reg_class(&ir_mod->types, v->type);
-                val_map[i] = ny_mfunc_create_vreg(mfn, rc);
+                if (is_aggr) {
+                    uint32_t sz = ny_type_size(&ir_mod->types, v->type);
+                    uint32_t al = ny_type_align(&ir_mod->types, v->type);
+                    Ny_Slot_ID sid = ny_mfunc_create_stack_slot(mfn, sz, al);
+                    val_slot_map[i] = sid;
+                } else {
+                    Ny_Reg_Class rc = type_to_reg_class(&ir_mod->types, v->type);
+                    val_map[i] = ny_mfunc_create_vreg(mfn, rc);
+                }
             }
         }
     }
@@ -199,7 +231,7 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
 
             switch (inst->opcode) {
             case NY_OPCODE_CONST: {
-                Ny_Machine_Operand mop = lower_operand(ir_mod, fn, ops[0], val_map, blk_map);
+                Ny_Machine_Operand mop = lower_operand(ir_mod, fn, ops[0], val_map, val_slot_map, blk_map);
                 ny_mfunc_append_inst(mfn, mb, NY_MOPC_COPY, def_reg, &mop, 1, 0);
                 break;
             }
@@ -226,8 +258,8 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
             case NY_OPCODE_FMUL:
             case NY_OPCODE_FDIV: {
                 Ny_Machine_Operand mops[2];
-                mops[0] = lower_operand(ir_mod, fn, ops[0], val_map, blk_map);
-                mops[1] = lower_operand(ir_mod, fn, ops[1], val_map, blk_map);
+                mops[0] = lower_operand(ir_mod, fn, ops[0], val_map, val_slot_map, blk_map);
+                mops[1] = lower_operand(ir_mod, fn, ops[1], val_map, val_slot_map, blk_map);
                 Ny_Machine_Opcode mopc = opcode_to_mopc((Ny_Opcode)inst->opcode);
                 ny_mfunc_append_inst(mfn, mb, mopc, def_reg, mops, 2, 0);
                 break;
@@ -235,7 +267,7 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
             case NY_OPCODE_NEG:
             case NY_OPCODE_NOT:
             case NY_OPCODE_FNEG: {
-                Ny_Machine_Operand mop = lower_operand(ir_mod, fn, ops[0], val_map, blk_map);
+                Ny_Machine_Operand mop = lower_operand(ir_mod, fn, ops[0], val_map, val_slot_map, blk_map);
                 Ny_Machine_Opcode mopc = opcode_to_mopc((Ny_Opcode)inst->opcode);
                 ny_mfunc_append_inst(mfn, mb, mopc, def_reg, &mop, 1, 0);
                 break;
@@ -257,8 +289,8 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
             case NY_OPCODE_FCMP_GT:
             case NY_OPCODE_FCMP_GE: {
                 Ny_Machine_Operand mops[3];
-                mops[0] = lower_operand(ir_mod, fn, ops[0], val_map, blk_map);
-                mops[1] = lower_operand(ir_mod, fn, ops[1], val_map, blk_map);
+                mops[0] = lower_operand(ir_mod, fn, ops[0], val_map, val_slot_map, blk_map);
+                mops[1] = lower_operand(ir_mod, fn, ops[1], val_map, val_slot_map, blk_map);
                 mops[2] = ny_mop_cond(opcode_to_cond((Ny_Opcode)inst->opcode));
                 ny_mfunc_append_inst(mfn, mb, NY_MOPC_CMP, def_reg, mops, 3, 0);
                 break;
@@ -294,7 +326,7 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
             }
             case NY_OPCODE_RETURN: {
                 if (inst->op_count > 0 && ops[0].kind == NY_OP_VALUE) {
-                    Ny_Machine_Operand mop = lower_operand(ir_mod, fn, ops[0], val_map, blk_map);
+                    Ny_Machine_Operand mop = lower_operand(ir_mod, fn, ops[0], val_map, val_slot_map, blk_map);
                     ny_mfunc_append_inst(mfn, mb, NY_MOPC_RET, (Ny_Machine_Reg){0}, &mop, 1, NY_MINST_FLAG_TERMINATOR);
                 } else {
                     ny_mfunc_append_inst(mfn, mb, NY_MOPC_RET, (Ny_Machine_Reg){0}, nullptr, 0, NY_MINST_FLAG_TERMINATOR);
@@ -309,9 +341,16 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
                 Ny_Machine_Operand mops[16];
                 size_t mop_count = 0;
                 for (size_t j = 0; j < inst->op_count && mop_count < 16; j++) {
-                    mops[mop_count++] = lower_operand(ir_mod, fn, ops[j], val_map, blk_map);
+                    mops[mop_count++] = lower_operand(ir_mod, fn, ops[j], val_map, val_slot_map, blk_map);
                 }
-                ny_mfunc_append_inst(mfn, mb, NY_MOPC_CALL, def_reg, mops, mop_count, NY_MINST_FLAG_CALL);
+                Ny_Inst_ID call_id = ny_mfunc_append_inst(mfn, mb, NY_MOPC_CALL, def_reg, mops, mop_count, NY_MINST_FLAG_CALL);
+                if (inst->result != NY_INVALID_VALUE) {
+                    Ny_Value *res_v = ny_function_get_value(fn, inst->result);
+                    if (res_v && ny_type_is_aggregate(&ir_mod->types, res_v->type)) {
+                        ny_mfunc_set_inst_ret_type(mfn, call_id, res_v->type);
+                        ny_mfunc_set_inst_result_slot(mfn, call_id, val_slot_map[inst->result]);
+                    }
+                }
                 break;
             }
             case NY_OPCODE_LOAD: {
@@ -331,7 +370,7 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
 
                 Ny_Machine_Operand mops[2];
                 mops[0] = ny_mop_mem(mem);
-                mops[1] = lower_operand(ir_mod, fn, ops[1], val_map, blk_map);
+                mops[1] = lower_operand(ir_mod, fn, ops[1], val_map, val_slot_map, blk_map);
                 ny_mfunc_append_inst(mfn, mb, NY_MOPC_STORE, (Ny_Machine_Reg){0}, mops, 2, NY_MINST_FLAG_SIDE_EFFECT);
                 break;
             }
@@ -380,16 +419,16 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
                 Ny_Machine_Operand mops[16];
                 size_t mop_count = 0;
                 for (size_t j = 0; j < inst->op_count && mop_count < 16; j++) {
-                    mops[mop_count++] = lower_operand(ir_mod, fn, ops[j], val_map, blk_map);
+                    mops[mop_count++] = lower_operand(ir_mod, fn, ops[j], val_map, val_slot_map, blk_map);
                 }
                 ny_mfunc_append_inst(mfn, mb, NY_MOPC_PHI, def_reg, mops, mop_count, 0);
                 break;
             }
             case NY_OPCODE_SELECT: {
                 Ny_Machine_Operand mops[3];
-                mops[0] = lower_operand(ir_mod, fn, ops[0], val_map, blk_map);
-                mops[1] = lower_operand(ir_mod, fn, ops[1], val_map, blk_map);
-                mops[2] = lower_operand(ir_mod, fn, ops[2], val_map, blk_map);
+                mops[0] = lower_operand(ir_mod, fn, ops[0], val_map, val_slot_map, blk_map);
+                mops[1] = lower_operand(ir_mod, fn, ops[1], val_map, val_slot_map, blk_map);
+                mops[2] = lower_operand(ir_mod, fn, ops[2], val_map, val_slot_map, blk_map);
                 ny_mfunc_append_inst(mfn, mb, NY_MOPC_SELECT, def_reg, mops, 3, 0);
                 break;
             }
@@ -399,7 +438,7 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
             case NY_OPCODE_CAST:
             case NY_OPCODE_EXTEND:
             case NY_OPCODE_TRUNCATE: {
-                Ny_Machine_Operand mop = lower_operand(ir_mod, fn, ops[0], val_map, blk_map);
+                Ny_Machine_Operand mop = lower_operand(ir_mod, fn, ops[0], val_map, val_slot_map, blk_map);
                 ny_mfunc_append_inst(mfn, mb, NY_MOPC_COPY, def_reg, &mop, 1, 0);
                 break;
             }
@@ -418,6 +457,7 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
     }
 
     ny_free(val_map, val_map_size * sizeof(Ny_Machine_Reg));
+    ny_free(val_slot_map, val_map_size * sizeof(Ny_Slot_ID));
     ny_free(blk_map, blk_map_size * sizeof(Ny_Block_ID));
     ny_cfg_info_destroy(&cfg);
     return true;
@@ -426,6 +466,7 @@ static bool lower_function(const Ny_Module *ir_mod, const Ny_Function *fn, Ny_Ma
 
 bool ny_ir_lower_to_mir(const Ny_Module *ir_mod, Ny_Machine_Module *out_mmod, Ny_Diagnostic_List *diags) {
     ny_mmod_init(out_mmod, ir_mod->name);
+    out_mmod->types = &ir_mod->types;
 
     for (size_t g = 0; g < ir_mod->global_count; g++) {
         const Ny_Global *glob = &ir_mod->globals[g];

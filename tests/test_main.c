@@ -222,6 +222,46 @@ void test_aarch64_cli_link_shared(void);
 void test_aarch64_deterministic_object_across_runs(void);
 void test_aarch64_deterministic_executable_across_runs(void);
 
+void test_aapcs64_struct_i32(void);
+void test_aapcs64_struct_i64(void);
+void test_aapcs64_struct_i32_i32(void);
+void test_aapcs64_struct_i64_i64(void);
+void test_aapcs64_struct_i32_i64(void);
+void test_aapcs64_struct_ptr_i64(void);
+void test_aapcs64_large_struct_indirect(void);
+void test_aapcs64_hfa_f32_f32(void);
+void test_aapcs64_hfa_f64_f64(void);
+void test_aapcs64_hfa_four_f32(void);
+void test_aapcs64_hfa_five_f32_indirect(void);
+void test_aapcs64_mixed_int_float_not_hfa(void);
+void test_aapcs64_nested_struct(void);
+void test_aapcs64_array_f32_hfa(void);
+void test_aapcs64_array_i32_large_indirect(void);
+void test_aapcs64_scalar_not_aggregate(void);
+void test_aapcs64_lower_small_struct_param(void);
+void test_aapcs64_lower_small_struct_call(void);
+void test_aapcs64_lower_large_struct_param(void);
+void test_aapcs64_lower_large_struct_call_sret(void);
+void test_aapcs64_lower_small_struct_elf(void);
+void test_aapcs64_lower_large_struct_elf(void);
+void test_aapcs64_empty_struct(void);
+void test_aapcs64_struct_i8(void);
+void test_aapcs64_struct_ptr_ptr(void);
+void test_aapcs64_nested_hfa_exceeds_four(void);
+void test_aapcs64_hfa_f64_f64_f64(void);
+void test_aapcs64_lower_mixed_args(void);
+void test_aapcs64_lower_multi_aggregate(void);
+void test_aapcs64_lower_reg_pressure_stack(void);
+
+void test_aarch64_rt_env_detection(void);
+void test_aarch64_rt_trivial_return(void);
+void test_aarch64_rt_arithmetic(void);
+void test_aarch64_rt_function_call(void);
+void test_aarch64_rt_global_data(void);
+void test_aarch64_rt_aggregate_pair(void);
+void test_aarch64_rt_aggregate_big_sret(void);
+void test_aarch64_rt_determinism(void);
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -441,6 +481,47 @@ int main(void) {
     RUN_TEST(test_aarch64_cli_link_shared);
     RUN_TEST(test_aarch64_deterministic_object_across_runs);
     RUN_TEST(test_aarch64_deterministic_executable_across_runs);
+
+    RUN_TEST(test_aapcs64_struct_i32);
+    RUN_TEST(test_aapcs64_struct_i64);
+    RUN_TEST(test_aapcs64_struct_i32_i32);
+    RUN_TEST(test_aapcs64_struct_i64_i64);
+    RUN_TEST(test_aapcs64_struct_i32_i64);
+    RUN_TEST(test_aapcs64_struct_ptr_i64);
+    RUN_TEST(test_aapcs64_large_struct_indirect);
+    RUN_TEST(test_aapcs64_hfa_f32_f32);
+    RUN_TEST(test_aapcs64_hfa_f64_f64);
+    RUN_TEST(test_aapcs64_hfa_four_f32);
+    RUN_TEST(test_aapcs64_hfa_five_f32_indirect);
+    RUN_TEST(test_aapcs64_mixed_int_float_not_hfa);
+    RUN_TEST(test_aapcs64_nested_struct);
+    RUN_TEST(test_aapcs64_array_f32_hfa);
+    RUN_TEST(test_aapcs64_array_i32_large_indirect);
+    RUN_TEST(test_aapcs64_scalar_not_aggregate);
+    RUN_TEST(test_aapcs64_lower_small_struct_param);
+    RUN_TEST(test_aapcs64_lower_small_struct_call);
+    RUN_TEST(test_aapcs64_lower_large_struct_param);
+    RUN_TEST(test_aapcs64_lower_large_struct_call_sret);
+    RUN_TEST(test_aapcs64_lower_small_struct_elf);
+    RUN_TEST(test_aapcs64_lower_large_struct_elf);
+
+    RUN_TEST(test_aapcs64_empty_struct);
+    RUN_TEST(test_aapcs64_struct_i8);
+    RUN_TEST(test_aapcs64_struct_ptr_ptr);
+    RUN_TEST(test_aapcs64_nested_hfa_exceeds_four);
+    RUN_TEST(test_aapcs64_hfa_f64_f64_f64);
+    RUN_TEST(test_aapcs64_lower_mixed_args);
+    RUN_TEST(test_aapcs64_lower_multi_aggregate);
+    RUN_TEST(test_aapcs64_lower_reg_pressure_stack);
+
+    RUN_TEST(test_aarch64_rt_env_detection);
+    RUN_TEST(test_aarch64_rt_trivial_return);
+    RUN_TEST(test_aarch64_rt_arithmetic);
+    RUN_TEST(test_aarch64_rt_function_call);
+    RUN_TEST(test_aarch64_rt_global_data);
+    RUN_TEST(test_aarch64_rt_aggregate_pair);
+    RUN_TEST(test_aarch64_rt_aggregate_big_sret);
+    RUN_TEST(test_aarch64_rt_determinism);
 
     if (g_tests_failed > 0) {
         fprintf(stderr, "%d of %d tests failed\n", g_tests_failed, g_tests_run);

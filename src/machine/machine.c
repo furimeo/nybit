@@ -123,6 +123,12 @@ void ny_mfunc_destroy(Ny_Machine_Function *fn) {
     if (fn->param_regs) {
         ny_free(fn->param_regs, fn->param_capacity * sizeof(Ny_Machine_Reg));
     }
+    if (fn->param_types) {
+        ny_free(fn->param_types, fn->param_capacity * sizeof(Ny_Type_ID));
+    }
+    if (fn->param_slots) {
+        ny_free(fn->param_slots, fn->param_capacity * sizeof(Ny_Slot_ID));
+    }
     if (fn->stack_slots) {
         ny_free(fn->stack_slots, fn->stack_slot_capacity * sizeof(Ny_Machine_Stack_Slot));
     }
@@ -144,6 +150,12 @@ void ny_mfunc_destroy(Ny_Machine_Function *fn) {
     if (fn->inst_locs) {
         ny_free(fn->inst_locs, fn->inst_loc_capacity * sizeof(Ny_Loc));
     }
+    if (fn->inst_ret_types) {
+        ny_free(fn->inst_ret_types, fn->inst_ret_type_capacity * sizeof(Ny_Type_ID));
+    }
+    if (fn->inst_result_slots) {
+        ny_free(fn->inst_result_slots, fn->inst_result_slot_capacity * sizeof(Ny_Slot_ID));
+    }
     if (fn->operands) {
         ny_free(fn->operands, fn->op_capacity * sizeof(Ny_Machine_Operand));
     }
@@ -158,9 +170,41 @@ Ny_Machine_Reg ny_mfunc_create_vreg(Ny_Machine_Function *fn, Ny_Reg_Class rc) {
     return ny_mreg_vreg(id, rc);
 }
 
+static void mfunc_ensure_param_capacity(Ny_Machine_Function *fn, size_t need) {
+    if (need <= fn->param_capacity) return;
+    size_t old_cap = fn->param_capacity;
+    size_t new_cap = old_cap == 0 ? 8 : old_cap;
+    while (new_cap < need) new_cap *= 2;
+    fn->param_regs = fn->param_regs
+        ? (Ny_Machine_Reg *)ny_realloc(fn->param_regs, old_cap * sizeof(Ny_Machine_Reg), new_cap * sizeof(Ny_Machine_Reg))
+        : (Ny_Machine_Reg *)ny_alloc_zero(new_cap * sizeof(Ny_Machine_Reg));
+    fn->param_types = fn->param_types
+        ? (Ny_Type_ID *)ny_realloc(fn->param_types, old_cap * sizeof(Ny_Type_ID), new_cap * sizeof(Ny_Type_ID))
+        : (Ny_Type_ID *)ny_alloc(new_cap * sizeof(Ny_Type_ID));
+    fn->param_slots = fn->param_slots
+        ? (Ny_Slot_ID *)ny_realloc(fn->param_slots, old_cap * sizeof(Ny_Slot_ID), new_cap * sizeof(Ny_Slot_ID))
+        : (Ny_Slot_ID *)ny_alloc(new_cap * sizeof(Ny_Slot_ID));
+    for (size_t i = old_cap; i < new_cap; i++) {
+        fn->param_types[i] = NY_INVALID_TYPE;
+        fn->param_slots[i] = NY_INVALID_SLOT;
+    }
+    fn->param_capacity = new_cap;
+}
+
 void ny_mfunc_add_param(Ny_Machine_Function *fn, Ny_Machine_Reg reg) {
-    ny_buf_grow((void **)&fn->param_regs, &fn->param_capacity, fn->param_count, sizeof(Ny_Machine_Reg));
-    fn->param_regs[fn->param_count++] = reg;
+    mfunc_ensure_param_capacity(fn, fn->param_count + 1);
+    fn->param_regs[fn->param_count] = reg;
+    fn->param_types[fn->param_count] = NY_INVALID_TYPE;
+    fn->param_slots[fn->param_count] = NY_INVALID_SLOT;
+    fn->param_count++;
+}
+
+void ny_mfunc_add_param_typed(Ny_Machine_Function *fn, Ny_Machine_Reg reg, Ny_Type_ID type, Ny_Slot_ID slot) {
+    mfunc_ensure_param_capacity(fn, fn->param_count + 1);
+    fn->param_regs[fn->param_count] = reg;
+    fn->param_types[fn->param_count] = type;
+    fn->param_slots[fn->param_count] = slot;
+    fn->param_count++;
 }
 
 Ny_Slot_ID ny_mfunc_create_stack_slot(Ny_Machine_Function *fn, uint32_t size, uint32_t align) {
@@ -211,17 +255,32 @@ static uint32_t mfunc_push_operands(Ny_Machine_Function *fn, const Ny_Machine_Op
     return op_start;
 }
 
+static void mfunc_grow_lazy_arrays(Ny_Machine_Function *fn) {
+    if (fn->inst_capacity == 0) return;
+    if (fn->inst_locs && fn->inst_capacity > fn->inst_loc_capacity) {
+        fn->inst_locs = (Ny_Loc *)ny_realloc(fn->inst_locs, fn->inst_loc_capacity * sizeof(Ny_Loc), fn->inst_capacity * sizeof(Ny_Loc));
+        memset(fn->inst_locs + fn->inst_loc_capacity, 0, (fn->inst_capacity - fn->inst_loc_capacity) * sizeof(Ny_Loc));
+        fn->inst_loc_capacity = fn->inst_capacity;
+    }
+    if (fn->inst_ret_types && fn->inst_capacity > fn->inst_ret_type_capacity) {
+        fn->inst_ret_types = (Ny_Type_ID *)ny_realloc(fn->inst_ret_types, fn->inst_ret_type_capacity * sizeof(Ny_Type_ID), fn->inst_capacity * sizeof(Ny_Type_ID));
+        for (size_t i = fn->inst_ret_type_capacity; i < fn->inst_capacity; i++) fn->inst_ret_types[i] = NY_INVALID_TYPE;
+        fn->inst_ret_type_capacity = fn->inst_capacity;
+    }
+    if (fn->inst_result_slots && fn->inst_capacity > fn->inst_result_slot_capacity) {
+        fn->inst_result_slots = (Ny_Slot_ID *)ny_realloc(fn->inst_result_slots, fn->inst_result_slot_capacity * sizeof(Ny_Slot_ID), fn->inst_capacity * sizeof(Ny_Slot_ID));
+        for (size_t i = fn->inst_result_slot_capacity; i < fn->inst_capacity; i++) fn->inst_result_slots[i] = NY_INVALID_SLOT;
+        fn->inst_result_slot_capacity = fn->inst_capacity;
+    }
+}
+
 Ny_Inst_ID ny_mfunc_append_inst(Ny_Machine_Function *fn, Ny_Block_ID block_id, Ny_Machine_Opcode opcode, Ny_Machine_Reg def_reg, const Ny_Machine_Operand *ops, size_t op_count, uint16_t flags) {
     Ny_Machine_Block *blk = ny_mfunc_get_block(fn, block_id);
     assert(blk != nullptr);
 
     Ny_Inst_ID inst_id = (Ny_Inst_ID)fn->inst_count;
     ny_buf_grow((void **)&fn->instructions, &fn->inst_capacity, fn->inst_count, sizeof(Ny_Machine_Instruction));
-    if (fn->inst_locs && fn->inst_capacity > fn->inst_loc_capacity) {
-        fn->inst_locs = (Ny_Loc *)ny_realloc(fn->inst_locs, fn->inst_loc_capacity * sizeof(Ny_Loc), fn->inst_capacity * sizeof(Ny_Loc));
-        memset(fn->inst_locs + fn->inst_loc_capacity, 0, (fn->inst_capacity - fn->inst_loc_capacity) * sizeof(Ny_Loc));
-        fn->inst_loc_capacity = fn->inst_capacity;
-    }
+    mfunc_grow_lazy_arrays(fn);
     fn->inst_count++;
 
     uint32_t op_start = mfunc_push_operands(fn, ops, op_count);
@@ -256,11 +315,7 @@ Ny_Inst_ID ny_mfunc_insert_before(Ny_Machine_Function *fn, Ny_Inst_ID before_ins
 
     Ny_Inst_ID inst_id = (Ny_Inst_ID)fn->inst_count;
     ny_buf_grow((void **)&fn->instructions, &fn->inst_capacity, fn->inst_count, sizeof(Ny_Machine_Instruction));
-    if (fn->inst_locs && fn->inst_capacity > fn->inst_loc_capacity) {
-        fn->inst_locs = (Ny_Loc *)ny_realloc(fn->inst_locs, fn->inst_loc_capacity * sizeof(Ny_Loc), fn->inst_capacity * sizeof(Ny_Loc));
-        memset(fn->inst_locs + fn->inst_loc_capacity, 0, (fn->inst_capacity - fn->inst_loc_capacity) * sizeof(Ny_Loc));
-        fn->inst_loc_capacity = fn->inst_capacity;
-    }
+    mfunc_grow_lazy_arrays(fn);
     fn->inst_count++;
 
     uint32_t op_start = mfunc_push_operands(fn, ops, op_count);
@@ -297,11 +352,7 @@ Ny_Inst_ID ny_mfunc_insert_after(Ny_Machine_Function *fn, Ny_Inst_ID after_inst_
 
     Ny_Inst_ID inst_id = (Ny_Inst_ID)fn->inst_count;
     ny_buf_grow((void **)&fn->instructions, &fn->inst_capacity, fn->inst_count, sizeof(Ny_Machine_Instruction));
-    if (fn->inst_locs && fn->inst_capacity > fn->inst_loc_capacity) {
-        fn->inst_locs = (Ny_Loc *)ny_realloc(fn->inst_locs, fn->inst_loc_capacity * sizeof(Ny_Loc), fn->inst_capacity * sizeof(Ny_Loc));
-        memset(fn->inst_locs + fn->inst_loc_capacity, 0, (fn->inst_capacity - fn->inst_loc_capacity) * sizeof(Ny_Loc));
-        fn->inst_loc_capacity = fn->inst_capacity;
-    }
+    mfunc_grow_lazy_arrays(fn);
     fn->inst_count++;
 
     uint32_t op_start = mfunc_push_operands(fn, ops, op_count);
@@ -356,6 +407,46 @@ Ny_Loc ny_mfunc_get_inst_loc(const Ny_Machine_Function *fn, Ny_Inst_ID inst_id) 
         return (Ny_Loc){0, 0, 0};
     }
     return fn->inst_locs[inst_id];
+}
+
+void ny_mfunc_set_inst_ret_type(Ny_Machine_Function *fn, Ny_Inst_ID inst_id, Ny_Type_ID type) {
+    if (inst_id >= fn->inst_count) return;
+    if (!fn->inst_ret_types) {
+        fn->inst_ret_types = (Ny_Type_ID *)ny_alloc(fn->inst_capacity * sizeof(Ny_Type_ID));
+        for (size_t i = 0; i < fn->inst_capacity; i++) fn->inst_ret_types[i] = NY_INVALID_TYPE;
+        fn->inst_ret_type_capacity = fn->inst_capacity;
+    }
+    if (fn->inst_ret_type_capacity < fn->inst_capacity) {
+        fn->inst_ret_types = (Ny_Type_ID *)ny_realloc(fn->inst_ret_types, fn->inst_ret_type_capacity * sizeof(Ny_Type_ID), fn->inst_capacity * sizeof(Ny_Type_ID));
+        for (size_t i = fn->inst_ret_type_capacity; i < fn->inst_capacity; i++) fn->inst_ret_types[i] = NY_INVALID_TYPE;
+        fn->inst_ret_type_capacity = fn->inst_capacity;
+    }
+    fn->inst_ret_types[inst_id] = type;
+}
+
+Ny_Type_ID ny_mfunc_get_inst_ret_type(const Ny_Machine_Function *fn, Ny_Inst_ID inst_id) {
+    if (!fn || !fn->inst_ret_types || inst_id >= fn->inst_count) return NY_INVALID_TYPE;
+    return fn->inst_ret_types[inst_id];
+}
+
+void ny_mfunc_set_inst_result_slot(Ny_Machine_Function *fn, Ny_Inst_ID inst_id, Ny_Slot_ID slot) {
+    if (inst_id >= fn->inst_count) return;
+    if (!fn->inst_result_slots) {
+        fn->inst_result_slots = (Ny_Slot_ID *)ny_alloc(fn->inst_capacity * sizeof(Ny_Slot_ID));
+        for (size_t i = 0; i < fn->inst_capacity; i++) fn->inst_result_slots[i] = NY_INVALID_SLOT;
+        fn->inst_result_slot_capacity = fn->inst_capacity;
+    }
+    if (fn->inst_result_slot_capacity < fn->inst_capacity) {
+        fn->inst_result_slots = (Ny_Slot_ID *)ny_realloc(fn->inst_result_slots, fn->inst_result_slot_capacity * sizeof(Ny_Slot_ID), fn->inst_capacity * sizeof(Ny_Slot_ID));
+        for (size_t i = fn->inst_result_slot_capacity; i < fn->inst_capacity; i++) fn->inst_result_slots[i] = NY_INVALID_SLOT;
+        fn->inst_result_slot_capacity = fn->inst_capacity;
+    }
+    fn->inst_result_slots[inst_id] = slot;
+}
+
+Ny_Slot_ID ny_mfunc_get_inst_result_slot(const Ny_Machine_Function *fn, Ny_Inst_ID inst_id) {
+    if (!fn || !fn->inst_result_slots || inst_id >= fn->inst_count) return NY_INVALID_SLOT;
+    return fn->inst_result_slots[inst_id];
 }
 
 void ny_mmod_init(Ny_Machine_Module *mod, Ny_String name) {

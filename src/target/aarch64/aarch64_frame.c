@@ -3,7 +3,7 @@
 #include "aarch64_internal.h"
 #include <string.h>
 
-void aarch64_frame_layout(AArch64_Stack_Frame *frame, const Ny_Machine_Function *mfn, Ny_Target_ABI abi) {
+void aarch64_frame_layout(AArch64_Stack_Frame *frame, const Ny_Machine_Function *mfn, Ny_Target_ABI abi, const Ny_Type_Table *tt) {
     memset(frame, 0, sizeof(*frame));
     frame->stack_size = 0;
     frame->has_call = false;
@@ -30,8 +30,34 @@ void aarch64_frame_layout(AArch64_Stack_Frame *frame, const Ny_Machine_Function 
                 size_t gpr_idx = 0;
                 size_t fp_idx = 0;
                 uint32_t stack_args = 0;
+                Ny_Machine_Operand *ops = ny_mfunc_get_operands(mfn, inst);
                 for (size_t i = 1; i < inst->op_count; i++) {
-                    Ny_Machine_Operand *ops = ny_mfunc_get_operands(mfn, inst);
+                    Ny_Type_ID arg_type = ops[i].type;
+                    if (tt && arg_type != NY_INVALID_TYPE && arg_type != NY_TYPE_VOID &&
+                        ny_type_is_aggregate(tt, arg_type)) {
+                        Ny_AAPCS64_ABI cls = aarch64_abi_classify_aggregate(tt, arg_type);
+                        if (cls.kind == NY_AAPCS64_GPR_AGG) {
+                            if (gpr_idx + cls.reg_count <= gpr_abi_count) {
+                                gpr_idx += cls.reg_count;
+                            } else {
+                                stack_args += cls.reg_count;
+                            }
+                        } else if (cls.kind == NY_AAPCS64_HFA) {
+                            if (fp_idx + cls.reg_count <= fp_abi_count) {
+                                fp_idx += cls.reg_count;
+                            } else {
+                                stack_args += (cls.size + 7) / 8;
+                            }
+                        } else if (cls.kind == NY_AAPCS64_INDIRECT) {
+                            if (gpr_idx < gpr_abi_count) {
+                                gpr_idx++;
+                            } else {
+                                stack_args++;
+                            }
+                        }
+                        continue;
+                    }
+
                     bool is_fp = (ops[i].kind == NY_MOP_KIND_REG &&
                                  (ops[i].reg.reg_class == NY_REG_CLASS_FP32 ||
                                   ops[i].reg.reg_class == NY_REG_CLASS_FP64));
@@ -110,6 +136,18 @@ void aarch64_frame_layout(AArch64_Stack_Frame *frame, const Ny_Machine_Function 
         locals_size += mfn->stack_slots[i].size;
         frame->slot_offsets[i] = (int32_t)(outgoing_size + locals_size - mfn->stack_slots[i].size);
     }
+
+    if (tt && mfn->return_type != NY_INVALID_TYPE && mfn->return_type != NY_TYPE_VOID &&
+        ny_type_is_aggregate(tt, mfn->return_type)) {
+        Ny_AAPCS64_ABI ret_cls = aarch64_abi_classify_aggregate(tt, mfn->return_type);
+        if (ret_cls.kind == NY_AAPCS64_INDIRECT && frame->has_call) {
+            frame->need_x8_save = true;
+            locals_size = (locals_size + 7) & ~7u;
+            locals_size += 8;
+            frame->x8_save_offset = (int32_t)(outgoing_size + locals_size - 8);
+        }
+    }
+
     locals_size = (locals_size + 15) & ~15u;
 
     uint32_t total = save_area_size + locals_size + outgoing_size;

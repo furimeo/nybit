@@ -94,6 +94,7 @@ typedef enum Ny_Machine_Op_Kind {
 
 typedef struct Ny_Machine_Operand {
     Ny_Machine_Op_Kind kind;
+    Ny_Type_ID type;
     union {
         Ny_Machine_Reg reg;
         int64_t imm_int;
@@ -285,6 +286,8 @@ typedef struct Ny_Machine_Function {
     Ny_Machine_Reg *param_regs;
     size_t param_count;
     size_t param_capacity;
+    Ny_Type_ID *param_types;
+    Ny_Slot_ID *param_slots;
 
     Ny_Machine_Stack_Slot *stack_slots;
     size_t stack_slot_count;
@@ -300,6 +303,10 @@ typedef struct Ny_Machine_Function {
     size_t inst_capacity;
     Ny_Loc *inst_locs;
     size_t inst_loc_capacity;
+    Ny_Type_ID *inst_ret_types;
+    size_t inst_ret_type_capacity;
+    Ny_Slot_ID *inst_result_slots;
+    size_t inst_result_slot_capacity;
 
     Ny_Machine_Operand *operands;
     size_t op_count;
@@ -311,6 +318,7 @@ void ny_mfunc_destroy(Ny_Machine_Function *fn);
 
 Ny_Machine_Reg ny_mfunc_create_vreg(Ny_Machine_Function *fn, Ny_Reg_Class rc);
 void ny_mfunc_add_param(Ny_Machine_Function *fn, Ny_Machine_Reg reg);
+void ny_mfunc_add_param_typed(Ny_Machine_Function *fn, Ny_Machine_Reg reg, Ny_Type_ID type, Ny_Slot_ID slot);
 Ny_Slot_ID ny_mfunc_create_stack_slot(Ny_Machine_Function *fn, uint32_t size, uint32_t align);
 
 Ny_Block_ID ny_mfunc_create_block(Ny_Machine_Function *fn, Ny_String name);
@@ -323,6 +331,10 @@ Ny_Machine_Instruction *ny_mfunc_get_inst(const Ny_Machine_Function *fn, Ny_Inst
 Ny_Machine_Operand *ny_mfunc_get_operands(const Ny_Machine_Function *fn, const Ny_Machine_Instruction *inst);
 void ny_mfunc_set_inst_loc(Ny_Machine_Function *fn, Ny_Inst_ID inst_id, Ny_Loc loc);
 Ny_Loc ny_mfunc_get_inst_loc(const Ny_Machine_Function *fn, Ny_Inst_ID inst_id);
+void ny_mfunc_set_inst_ret_type(Ny_Machine_Function *fn, Ny_Inst_ID inst_id, Ny_Type_ID type);
+Ny_Type_ID ny_mfunc_get_inst_ret_type(const Ny_Machine_Function *fn, Ny_Inst_ID inst_id);
+void ny_mfunc_set_inst_result_slot(Ny_Machine_Function *fn, Ny_Inst_ID inst_id, Ny_Slot_ID slot);
+Ny_Slot_ID ny_mfunc_get_inst_result_slot(const Ny_Machine_Function *fn, Ny_Inst_ID inst_id);
 
 /* Machine Global */
 
@@ -338,6 +350,7 @@ typedef struct Ny_Machine_Global {
 
 typedef struct Ny_Machine_Module {
     Ny_String name;
+    const Ny_Type_Table *types;
     Ny_Machine_Function *functions;
     size_t function_count;
     size_t function_capacity;

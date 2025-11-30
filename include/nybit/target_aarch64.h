@@ -245,6 +245,8 @@ typedef struct AArch64_Stack_Frame {
     bool has_call;
     uint64_t callee_saved_mask;
     uint32_t num_callee_saved;
+    bool need_x8_save;
+    int32_t x8_save_offset;
 } AArch64_Stack_Frame;
 
 typedef struct AArch64_Block {
@@ -285,6 +287,23 @@ const AArch64_Phys_Reg *aarch64_abi_arg_regs(Ny_Target_ABI abi, size_t *out_coun
 const AArch64_Phys_Reg *aarch64_abi_fp_arg_regs(Ny_Target_ABI abi, size_t *out_count);
 AArch64_Phys_Reg aarch64_abi_ret_reg(Ny_Target_ABI abi, uint8_t size, bool is_fp);
 bool aarch64_abi_is_callee_saved(Ny_Target_ABI abi, AArch64_Phys_Reg reg);
+
+/* AAPCS64 aggregate ABI classification */
+typedef enum {
+    NY_AAPCS64_SCALAR = 0,
+    NY_AAPCS64_GPR_AGG,
+    NY_AAPCS64_HFA,
+    NY_AAPCS64_INDIRECT,
+} Ny_AAPCS64_Kind;
+
+typedef struct Ny_AAPCS64_ABI {
+    Ny_AAPCS64_Kind kind;
+    uint32_t size;
+    uint8_t reg_count;
+    Ny_Type_ID hfa_member;
+} Ny_AAPCS64_ABI;
+
+Ny_AAPCS64_ABI aarch64_abi_classify_aggregate(const Ny_Type_Table *tt, Ny_Type_ID ty);
 
 bool aarch64_lower_machine_func(const Ny_Target *target, const Ny_Machine_Function *mfn, void **out_target_fn, Ny_Diagnostic_List *diags);
 bool aarch64_lower_machine_mod(const Ny_Target *target, const Ny_Machine_Module *mmod, AArch64_Module *out_mod, Ny_Diagnostic_List *diags);

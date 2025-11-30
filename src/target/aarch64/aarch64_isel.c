@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "aarch64_internal.h"
+#include <nybit/target_aarch64.h>
+#include <nybit/ir.h>
 #include <string.h>
 
 static AArch64_Reg lower_reg(Ny_Machine_Reg mreg) {
@@ -156,9 +158,56 @@ static bool imm_fits_addsub(int64_t val) {
     return false;
 }
 
+static void emit_slot_addr(AArch64_Block *blk, const AArch64_Stack_Frame *frame,
+                           Ny_Slot_ID slot, AArch64_Reg dst) {
+    int32_t off = (int32_t)frame->slot_offsets[slot];
+    AArch64_Reg fp = aarch64_reg_phys(AARCH64_FP, 8);
+    if (imm_fits_addsub(off)) {
+        AArch64_Instruction add = {
+            .opcode = AARCH64_OPC_ADD, .size = 8, .cond = 0, .op_count = 3, .shift = 0,
+            .ops = { aarch64_op_reg(dst), aarch64_op_reg(fp), aarch64_op_imm(off) }
+        };
+        aarch64_block_append_inst(blk, add);
+    } else {
+        AArch64_Reg scratch = aarch64_reg_phys(AARCH64_X16, 8);
+        emit_mov_imm(blk, scratch, off);
+        AArch64_Instruction add = {
+            .opcode = AARCH64_OPC_ADD, .size = 8, .cond = 0, .op_count = 3, .shift = 0,
+            .ops = { aarch64_op_reg(dst), aarch64_op_reg(fp), aarch64_op_reg(scratch) }
+        };
+        aarch64_block_append_inst(blk, add);
+    }
+}
+
+static void emit_load_chunk(AArch64_Block *blk, const AArch64_Stack_Frame *frame,
+                            Ny_Slot_ID slot, int32_t off, AArch64_Reg dst) {
+    AArch64_Mem mem = {
+        .base = aarch64_reg_phys(AARCH64_FP, 8),
+        .disp = (int32_t)frame->slot_offsets[slot] + off,
+    };
+    AArch64_Instruction ldr = {
+        .opcode = AARCH64_OPC_LDR, .size = 8, .cond = 0, .op_count = 2, .shift = 0,
+        .ops = { aarch64_op_reg(dst), aarch64_op_mem(mem) }
+    };
+    aarch64_block_append_inst(blk, ldr);
+}
+
+static void emit_store_chunk(AArch64_Block *blk, const AArch64_Stack_Frame *frame,
+                             AArch64_Reg src, Ny_Slot_ID slot, int32_t off) {
+    AArch64_Mem mem = {
+        .base = aarch64_reg_phys(AARCH64_FP, 8),
+        .disp = (int32_t)frame->slot_offsets[slot] + off,
+    };
+    AArch64_Instruction str = {
+        .opcode = AARCH64_OPC_STR, .size = 8, .cond = 0, .op_count = 2, .shift = 0,
+        .ops = { aarch64_op_reg(src), aarch64_op_mem(mem) }
+    };
+    aarch64_block_append_inst(blk, str);
+}
+
 static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mfn,
                               const Ny_Machine_Instruction *minst, const AArch64_Stack_Frame *frame,
-                              Ny_Target_ABI abi) {
+                              Ny_Target_ABI abi, const Ny_Type_Table *tt) {
     Ny_Machine_Operand *mops = ny_mfunc_get_operands(mfn, minst);
     AArch64_Reg def_r = {0};
     bool has_def = ny_mreg_is_valid(minst->def_reg);
@@ -622,7 +671,60 @@ static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mf
         Param_Copy copies[64];
         size_t actual_copies = 0;
 
+        Ny_Type_ID ret_type = ny_mfunc_get_inst_ret_type(mfn, minst->id);
+        Ny_Slot_ID ret_slot = ny_mfunc_get_inst_result_slot(mfn, minst->id);
+        bool ret_aggregate = (tt && ret_type != NY_INVALID_TYPE && ret_slot != NY_INVALID_SLOT);
+        Ny_AAPCS64_ABI ret_cls = {0};
+        if (ret_aggregate) {
+            ret_cls = aarch64_abi_classify_aggregate(tt, ret_type);
+            if (ret_cls.kind == NY_AAPCS64_INDIRECT) {
+                AArch64_Reg sret_reg = aarch64_reg_phys(AARCH64_X8, 8);
+                emit_slot_addr(xblk, frame, ret_slot, sret_reg);
+            }
+        }
+
         for (size_t i = 1; i < minst->op_count && actual_copies < 64; i++) {
+            Ny_Type_ID arg_type = mops[i].type;
+            if (tt && arg_type != NY_INVALID_TYPE && arg_type != NY_TYPE_VOID &&
+                ny_type_is_aggregate(tt, arg_type)) {
+                Ny_Slot_ID arg_slot = mops[i].mem.stack_slot;
+                Ny_AAPCS64_ABI cls = aarch64_abi_classify_aggregate(tt, arg_type);
+
+                if (cls.kind == NY_AAPCS64_GPR_AGG) {
+                    for (uint8_t c = 0; c < cls.reg_count && actual_copies < 64; c++) {
+                        if (gpr_idx < gpr_arg_count) {
+                            copies[actual_copies].is_mem = false;
+                            copies[actual_copies].dst = aarch64_reg_phys(gpr_args[gpr_idx++], 8);
+                            copies[actual_copies].is_fp = false;
+                            AArch64_Reg tmp = aarch64_reg_phys(AARCH64_X16, 8);
+                            emit_load_chunk(xblk, frame, arg_slot, (int32_t)c * 8, tmp);
+                            copies[actual_copies].src = aarch64_op_reg(tmp);
+                            actual_copies++;
+                        }
+                    }
+                } else if (cls.kind == NY_AAPCS64_HFA) {
+                    for (uint8_t c = 0; c < cls.reg_count && actual_copies < 64; c++) {
+                        if (fp_idx < fp_arg_count) {
+                            copies[actual_copies].is_mem = false;
+                            copies[actual_copies].dst = aarch64_reg_phys(fp_args[fp_idx++], 8);
+                            copies[actual_copies].is_fp = true;
+                            actual_copies++;
+                        }
+                    }
+                } else if (cls.kind == NY_AAPCS64_INDIRECT) {
+                    if (gpr_idx < gpr_arg_count) {
+                        copies[actual_copies].is_mem = false;
+                        copies[actual_copies].dst = aarch64_reg_phys(gpr_args[gpr_idx++], 8);
+                        copies[actual_copies].is_fp = false;
+                        AArch64_Reg tmp = aarch64_reg_phys(AARCH64_X16, 8);
+                        emit_slot_addr(xblk, frame, arg_slot, tmp);
+                        copies[actual_copies].src = aarch64_op_reg(tmp);
+                        actual_copies++;
+                    }
+                }
+                continue;
+            }
+
             AArch64_Operand arg_op = lower_operand(mops[i], frame);
             bool is_fp = (mops[i].kind == NY_MOP_KIND_REG &&
                          (mops[i].reg.reg_class == NY_REG_CLASS_FP32 ||
@@ -747,7 +849,18 @@ static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mf
             aarch64_block_append_inst(xblk, call);
         }
 
-        if (has_def) {
+        if (ret_aggregate) {
+            if (ret_cls.kind == NY_AAPCS64_GPR_AGG) {
+                for (uint8_t c = 0; c < ret_cls.reg_count; c++) {
+                    AArch64_Reg src = aarch64_reg_phys(gpr_args[c], 8);
+                    emit_store_chunk(xblk, frame, src, ret_slot, (int32_t)c * 8);
+                }
+            } else if (ret_cls.kind == NY_AAPCS64_HFA) {
+                /* HFA return stored by caller into ret_slot handled elsewhere */
+            } else if (ret_cls.kind == NY_AAPCS64_INDIRECT) {
+                /* sret: callee wrote into the buffer pointed by X8, already in ret_slot */
+            }
+        } else if (has_def) {
             bool is_fp = (minst->def_reg.reg_class == NY_REG_CLASS_FP32 ||
                          minst->def_reg.reg_class == NY_REG_CLASS_FP64);
             AArch64_Phys_Reg ret_phys = aarch64_abi_ret_reg(abi, def_r.size, is_fp);
@@ -757,7 +870,52 @@ static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mf
         break;
     }
     case NY_MOPC_RET: {
-        if (minst->op_count > 0 && mops[0].kind != NY_MOP_KIND_NONE) {
+        bool ret_aggregate = false;
+        Ny_Type_ID ret_type = mfn->return_type;
+        if (tt && ret_type != NY_INVALID_TYPE && ret_type != NY_TYPE_VOID &&
+            ny_type_is_aggregate(tt, ret_type)) {
+            ret_aggregate = true;
+        }
+
+        if (ret_aggregate && minst->op_count > 0 && mops[0].kind == NY_MOP_KIND_MEM) {
+            Ny_Slot_ID ret_slot = mops[0].mem.stack_slot;
+            Ny_AAPCS64_ABI cls = aarch64_abi_classify_aggregate(tt, ret_type);
+
+            if (cls.kind == NY_AAPCS64_GPR_AGG) {
+                size_t gpr_arg_count = 0;
+                const AArch64_Phys_Reg *gpr_args = aarch64_abi_arg_regs(abi, &gpr_arg_count);
+                for (uint8_t c = 0; c < cls.reg_count && c < gpr_arg_count; c++) {
+                    AArch64_Reg dst = aarch64_reg_phys(gpr_args[c], 8);
+                    emit_load_chunk(xblk, frame, ret_slot, (int32_t)c * 8, dst);
+                }
+            } else if (cls.kind == NY_AAPCS64_INDIRECT) {
+                AArch64_Reg sret_buf = aarch64_reg_phys(AARCH64_X8, 8);
+                if (frame->need_x8_save) {
+                    AArch64_Mem restore = {
+                        .base = aarch64_reg_phys(AARCH64_FP, 8),
+                        .disp = frame->x8_save_offset,
+                    };
+                    AArch64_Instruction ldr = {
+                        .opcode = AARCH64_OPC_LDR, .size = 8, .cond = 0,
+                        .op_count = 2, .shift = 0,
+                        .ops = { aarch64_op_reg(sret_buf), aarch64_op_mem(restore) }
+                    };
+                    aarch64_block_append_inst(xblk, ldr);
+                }
+                AArch64_Reg scratch = aarch64_reg_phys(AARCH64_X16, 8);
+                uint32_t total = (cls.size + 7) / 8 * 8;
+                for (uint32_t off = 0; off < total; off += 8) {
+                    emit_load_chunk(xblk, frame, ret_slot, (int32_t)off, scratch);
+                    AArch64_Mem dst_m = { .base = sret_buf, .disp = (int32_t)off };
+                    AArch64_Instruction str = {
+                        .opcode = AARCH64_OPC_STR, .size = 8, .cond = 0,
+                        .op_count = 2, .shift = 0,
+                        .ops = { aarch64_op_reg(scratch), aarch64_op_mem(dst_m) }
+                    };
+                    aarch64_block_append_inst(xblk, str);
+                }
+            }
+        } else if (minst->op_count > 0 && mops[0].kind != NY_MOP_KIND_NONE) {
             AArch64_Operand ret_val = lower_operand(mops[0], frame);
             uint8_t sz = 8;
             if (ret_val.kind == AARCH64_OP_REG) sz = ret_val.reg.size;
@@ -789,10 +947,11 @@ static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mf
 }
 
 static bool aarch64_lower_func_impl(const Ny_Target *target, const Ny_Machine_Function *mfn,
-                                    AArch64_Function *out_fn, Ny_Diagnostic_List *diags) {
+                                    AArch64_Function *out_fn, Ny_Diagnostic_List *diags,
+                                    const Ny_Type_Table *tt) {
     (void)diags;
     aarch64_func_init(out_fn, mfn->name, target->abi);
-    aarch64_frame_layout(&out_fn->frame, mfn, target->abi);
+    aarch64_frame_layout(&out_fn->frame, mfn, target->abi, tt);
 
     out_fn->block_count = mfn->block_count;
     out_fn->block_capacity = mfn->block_count;
@@ -809,6 +968,20 @@ static bool aarch64_lower_func_impl(const Ny_Target *target, const Ny_Machine_Fu
         if (b == 0 || mblk->id == mfn->entry_block) {
             aarch64_emit_prologue(xblk, &out_fn->frame);
 
+            if (out_fn->frame.need_x8_save) {
+                AArch64_Reg x8 = aarch64_reg_phys(AARCH64_X8, 8);
+                AArch64_Mem save = {
+                    .base = aarch64_reg_phys(AARCH64_FP, 8),
+                    .disp = out_fn->frame.x8_save_offset,
+                };
+                AArch64_Instruction str = {
+                    .opcode = AARCH64_OPC_STR, .size = 8, .cond = 0,
+                    .op_count = 2, .shift = 0,
+                    .ops = { aarch64_op_reg(x8), aarch64_op_mem(save) }
+                };
+                aarch64_block_append_inst(xblk, str);
+            }
+
             size_t gpr_abi_count = 0;
             const AArch64_Phys_Reg *gpr_args = aarch64_abi_arg_regs(target->abi, &gpr_abi_count);
             size_t fp_abi_count = 0;
@@ -818,6 +991,42 @@ static bool aarch64_lower_func_impl(const Ny_Target *target, const Ny_Machine_Fu
             size_t fp_idx = 0;
 
             for (size_t p = 0; p < mfn->param_count; p++) {
+                Ny_Type_ID ptype = mfn->param_types[p];
+                if (tt && ptype != NY_INVALID_TYPE && ny_type_is_aggregate(tt, ptype)) {
+                    Ny_Slot_ID pslot = mfn->param_slots[p];
+                    Ny_AAPCS64_ABI cls = aarch64_abi_classify_aggregate(tt, ptype);
+
+                    if (cls.kind == NY_AAPCS64_GPR_AGG) {
+                        for (uint8_t c = 0; c < cls.reg_count; c++) {
+                            if (gpr_idx < gpr_abi_count) {
+                                AArch64_Reg src = aarch64_reg_phys(gpr_args[gpr_idx++], 8);
+                                emit_store_chunk(xblk, &out_fn->frame, src, pslot, (int32_t)c * 8);
+                            }
+                        }
+                    } else if (cls.kind == NY_AAPCS64_HFA) {
+                        for (uint8_t c = 0; c < cls.reg_count; c++) {
+                            if (fp_idx < fp_abi_count) fp_idx++;
+                        }
+                    } else if (cls.kind == NY_AAPCS64_INDIRECT) {
+                        if (gpr_idx < gpr_abi_count) {
+                            AArch64_Reg ptr = aarch64_reg_phys(gpr_args[gpr_idx++], 8);
+                            AArch64_Reg scratch = aarch64_reg_phys(AARCH64_X17, 8);
+                            uint32_t total = (cls.size + 7) / 8 * 8;
+                            for (uint32_t off = 0; off < total; off += 8) {
+                                AArch64_Mem src_m = { .base = ptr, .disp = (int32_t)off };
+                                AArch64_Instruction ldr = {
+                                    .opcode = AARCH64_OPC_LDR, .size = 8, .cond = 0,
+                                    .op_count = 2, .shift = 0,
+                                    .ops = { aarch64_op_reg(scratch), aarch64_op_mem(src_m) }
+                                };
+                                aarch64_block_append_inst(xblk, ldr);
+                                emit_store_chunk(xblk, &out_fn->frame, scratch, pslot, (int32_t)off);
+                            }
+                        }
+                    }
+                    continue;
+                }
+
                 AArch64_Reg vreg = lower_reg(mfn->param_regs[p]);
                 bool is_fp = (mfn->param_regs[p].reg_class == NY_REG_CLASS_FP32 ||
                               mfn->param_regs[p].reg_class == NY_REG_CLASS_FP64);
@@ -840,7 +1049,7 @@ static bool aarch64_lower_func_impl(const Ny_Target *target, const Ny_Machine_Fu
         while (curr != NY_INVALID_INST) {
             Ny_Machine_Instruction *minst = ny_mfunc_get_inst(mfn, curr);
             if (!minst) break;
-            lower_instruction(xblk, mfn, minst, &out_fn->frame, target->abi);
+            lower_instruction(xblk, mfn, minst, &out_fn->frame, target->abi, tt);
             curr = minst->next;
         }
     }
@@ -851,7 +1060,7 @@ static bool aarch64_lower_func_impl(const Ny_Target *target, const Ny_Machine_Fu
 bool aarch64_lower_machine_func(const Ny_Target *target, const Ny_Machine_Function *mfn,
                                 void **out_target_fn, Ny_Diagnostic_List *diags) {
     AArch64_Function *fn = (AArch64_Function *)ny_alloc_zero(sizeof(AArch64_Function));
-    if (!aarch64_lower_func_impl(target, mfn, fn, diags)) {
+    if (!aarch64_lower_func_impl(target, mfn, fn, diags, nullptr)) {
         aarch64_func_destroy(fn);
         ny_free(fn, sizeof(AArch64_Function));
         return false;
@@ -888,7 +1097,7 @@ bool aarch64_lower_machine_mod(const Ny_Target *target, const Ny_Machine_Module 
     }
 
     for (size_t i = 0; i < mmod->function_count; i++) {
-        if (!aarch64_lower_func_impl(target, &mmod->functions[i], &out_mod->functions[i], diags)) {
+        if (!aarch64_lower_func_impl(target, &mmod->functions[i], &out_mod->functions[i], diags, mmod->types)) {
             return false;
         }
         out_mod->function_count++;
