@@ -52,7 +52,14 @@ void aarch64_buf_append_reloc(AArch64_Code_Buffer *buf, AArch64_Relocation reloc
 }
 
 static uint8_t reg_num(AArch64_Reg r) {
+    if (r.phys_reg >= AARCH64_V0) {
+        return (uint8_t)(r.phys_reg - AARCH64_V0);
+    }
     return r.phys_reg;
+}
+
+static bool is_fp_reg(AArch64_Reg r) {
+    return r.phys_reg >= AARCH64_V0;
 }
 
 static uint32_t sf_bit(uint8_t size) {
@@ -107,10 +114,18 @@ bool aarch64_encode_instruction(AArch64_Code_Buffer *buf, const AArch64_Instruct
     case AARCH64_OPC_MOV: {
         AArch64_Reg dst = inst->ops[0].reg;
         AArch64_Reg src = inst->ops[1].reg;
-        word = sf_bit(dst.size) | 0x2A000000u
-             | ((uint32_t)reg_num(src) << 16)
-             | ((uint32_t)31 << 5)
-             | (uint32_t)reg_num(dst);
+        if (is_fp_reg(dst) || is_fp_reg(src)) {
+            /* FMOV Dd,Dn or FMOV Sd,Sn */
+            uint32_t fmov = (dst.size == 8) ? 0x1E604000u : 0x1E204000u;
+            word = fmov
+                 | ((uint32_t)reg_num(src) << 5)
+                 | (uint32_t)reg_num(dst);
+        } else {
+            word = sf_bit(dst.size) | 0x2A000000u
+                 | ((uint32_t)reg_num(src) << 16)
+                 | ((uint32_t)31 << 5)
+                 | (uint32_t)reg_num(dst);
+        }
         break;
     }
     case AARCH64_OPC_MOVZ: {
@@ -357,8 +372,15 @@ bool aarch64_encode_instruction(AArch64_Code_Buffer *buf, const AArch64_Instruct
     case AARCH64_OPC_LDR: {
         AArch64_Reg dst = inst->ops[0].reg;
         AArch64_Mem mem = inst->ops[1].mem;
-        uint32_t base = (dst.size == 8) ? 0xF9400000u : 0xB9400000u;
-        uint32_t scale = (dst.size == 8) ? 8 : 4;
+        uint32_t base;
+        uint32_t scale;
+        if (is_fp_reg(dst)) {
+            base = (dst.size == 8) ? 0xFD400000u : 0xBD400000u;
+            scale = (dst.size == 8) ? 8 : 4;
+        } else {
+            base = (dst.size == 8) ? 0xF9400000u : 0xB9400000u;
+            scale = (dst.size == 8) ? 8 : 4;
+        }
         uint32_t imm12 = (uint32_t)(mem.disp / (int32_t)scale) & 0xFFF;
         word = base | (imm12 << 10)
              | ((uint32_t)reg_num(mem.base) << 5)
@@ -369,7 +391,12 @@ bool aarch64_encode_instruction(AArch64_Code_Buffer *buf, const AArch64_Instruct
         if (inst->op_count >= 3 && inst->ops[2].kind == AARCH64_OP_GLOBAL) {
             AArch64_Reg src = inst->ops[0].reg;
             AArch64_Reg base_reg = inst->ops[1].reg;
-            uint32_t base = (src.size == 8) ? 0xF9000000u : 0xB9000000u;
+            uint32_t base;
+            if (is_fp_reg(src)) {
+                base = (src.size == 8) ? 0xFD000000u : 0xBD000000u;
+            } else {
+                base = (src.size == 8) ? 0xF9000000u : 0xB9000000u;
+            }
             word = base
                  | ((uint32_t)reg_num(base_reg) << 5)
                  | (uint32_t)reg_num(src);
@@ -386,8 +413,15 @@ bool aarch64_encode_instruction(AArch64_Code_Buffer *buf, const AArch64_Instruct
         }
         AArch64_Reg src = inst->ops[0].reg;
         AArch64_Mem mem = inst->ops[1].mem;
-        uint32_t base = (src.size == 8) ? 0xF9000000u : 0xB9000000u;
-        uint32_t scale = (src.size == 8) ? 8 : 4;
+        uint32_t base;
+        uint32_t scale;
+        if (is_fp_reg(src)) {
+            base = (src.size == 8) ? 0xFD000000u : 0xBD000000u;
+            scale = (src.size == 8) ? 8 : 4;
+        } else {
+            base = (src.size == 8) ? 0xF9000000u : 0xB9000000u;
+            scale = (src.size == 8) ? 8 : 4;
+        }
         uint32_t imm12 = (uint32_t)(mem.disp / (int32_t)scale) & 0xFFF;
         word = base | (imm12 << 10)
              | ((uint32_t)reg_num(mem.base) << 5)
@@ -416,7 +450,8 @@ bool aarch64_encode_instruction(AArch64_Code_Buffer *buf, const AArch64_Instruct
         AArch64_Reg rt1 = inst->ops[0].reg;
         AArch64_Reg rt2 = inst->ops[1].reg;
         AArch64_Mem mem = inst->ops[2].mem;
-        int32_t imm7 = mem.disp / 8;
+        uint32_t scale = (rt1.size == 8) ? 8 : 4;
+        int32_t imm7 = mem.disp / (int32_t)scale;
         if (imm7 < -64 || imm7 > 63) {
             if (diags) {
                 char buf2[128];
@@ -425,7 +460,13 @@ bool aarch64_encode_instruction(AArch64_Code_Buffer *buf, const AArch64_Instruct
             }
             return false;
         }
-        word = 0xA9000000u
+        uint32_t base;
+        if (is_fp_reg(rt1)) {
+            base = (rt1.size == 8) ? 0x6D000000u : 0x2D000000u;
+        } else {
+            base = (rt1.size == 8) ? 0xA9000000u : 0x29000000u;
+        }
+        word = base
              | (((uint32_t)imm7 & 0x7F) << 15)
              | ((uint32_t)reg_num(rt2) << 10)
              | ((uint32_t)reg_num(mem.base) << 5)
@@ -436,7 +477,8 @@ bool aarch64_encode_instruction(AArch64_Code_Buffer *buf, const AArch64_Instruct
         AArch64_Reg rt1 = inst->ops[0].reg;
         AArch64_Reg rt2 = inst->ops[1].reg;
         AArch64_Mem mem = inst->ops[2].mem;
-        int32_t imm7 = mem.disp / 8;
+        uint32_t scale = (rt1.size == 8) ? 8 : 4;
+        int32_t imm7 = mem.disp / (int32_t)scale;
         if (imm7 < -64 || imm7 > 63) {
             if (diags) {
                 char buf2[128];
@@ -445,7 +487,13 @@ bool aarch64_encode_instruction(AArch64_Code_Buffer *buf, const AArch64_Instruct
             }
             return false;
         }
-        word = 0xA9400000u
+        uint32_t base;
+        if (is_fp_reg(rt1)) {
+            base = (rt1.size == 8) ? 0x6D400000u : 0x2D400000u;
+        } else {
+            base = (rt1.size == 8) ? 0xA9400000u : 0x29400000u;
+        }
+        word = base
              | (((uint32_t)imm7 & 0x7F) << 15)
              | ((uint32_t)reg_num(rt2) << 10)
              | ((uint32_t)reg_num(mem.base) << 5)

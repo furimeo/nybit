@@ -140,7 +140,7 @@ void aarch64_frame_layout(AArch64_Stack_Frame *frame, const Ny_Machine_Function 
     if (tt && mfn->return_type != NY_INVALID_TYPE && mfn->return_type != NY_TYPE_VOID &&
         ny_type_is_aggregate(tt, mfn->return_type)) {
         Ny_AAPCS64_ABI ret_cls = aarch64_abi_classify_aggregate(tt, mfn->return_type);
-        if (ret_cls.kind == NY_AAPCS64_INDIRECT && frame->has_call) {
+        if (ret_cls.kind == NY_AAPCS64_INDIRECT) {
             frame->need_x8_save = true;
             locals_size = (locals_size + 7) & ~7u;
             locals_size += 8;
@@ -159,7 +159,11 @@ static uint32_t fp_lr_offset(const AArch64_Stack_Frame *frame) {
     return frame->stack_size - 16;
 }
 
-static uint32_t callee_saved_offset(const AArch64_Stack_Frame *frame, uint32_t index) {
+static uint32_t callee_saved_pair_offset(const AArch64_Stack_Frame *frame, uint32_t index) {
+    return frame->stack_size - 16 - (index + 2) * 8;
+}
+
+static uint32_t callee_saved_single_offset(const AArch64_Stack_Frame *frame, uint32_t index) {
     return frame->stack_size - 16 - (index + 1) * 8;
 }
 
@@ -226,7 +230,7 @@ void aarch64_emit_prologue(AArch64_Block *blk, const AArch64_Stack_Frame *frame)
             prev_reg = (AArch64_Phys_Reg)r;
             prev_saved = true;
         } else {
-            uint32_t off = callee_saved_offset(frame, cs_index);
+            uint32_t off = callee_saved_pair_offset(frame, cs_index);
             AArch64_Instruction stp = {
                 .opcode = AARCH64_OPC_STP,
                 .size = 8,
@@ -252,7 +256,7 @@ void aarch64_emit_prologue(AArch64_Block *blk, const AArch64_Stack_Frame *frame)
     }
 
     if (prev_saved) {
-        uint32_t off = callee_saved_offset(frame, cs_index);
+        uint32_t off = callee_saved_single_offset(frame, cs_index);
         AArch64_Instruction str_single = {
             .opcode = AARCH64_OPC_STR,
             .size = 8,
@@ -307,7 +311,7 @@ void aarch64_emit_epilogue(AArch64_Block *blk, const AArch64_Stack_Frame *frame)
             prev_reg = (AArch64_Phys_Reg)r;
             prev_saved = true;
         } else {
-            uint32_t off = callee_saved_offset(frame, cs_index);
+            uint32_t off = callee_saved_pair_offset(frame, cs_index);
             AArch64_Instruction ldp = {
                 .opcode = AARCH64_OPC_LDP,
                 .size = 8,
@@ -333,7 +337,7 @@ void aarch64_emit_epilogue(AArch64_Block *blk, const AArch64_Stack_Frame *frame)
     }
 
     if (prev_saved) {
-        uint32_t off = callee_saved_offset(frame, cs_index);
+        uint32_t off = callee_saved_single_offset(frame, cs_index);
         AArch64_Instruction ldr_single = {
             .opcode = AARCH64_OPC_LDR,
             .size = 8,

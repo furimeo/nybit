@@ -199,10 +199,60 @@ static void emit_store_chunk(AArch64_Block *blk, const AArch64_Stack_Frame *fram
         .disp = (int32_t)frame->slot_offsets[slot] + off,
     };
     AArch64_Instruction str = {
-        .opcode = AARCH64_OPC_STR, .size = 8, .cond = 0, .op_count = 2, .shift = 0,
+        .opcode = AARCH64_OPC_STR, .size = src.size, .cond = 0, .op_count = 2, .shift = 0,
         .ops = { aarch64_op_reg(src), aarch64_op_mem(mem) }
     };
     aarch64_block_append_inst(blk, str);
+}
+
+static void emit_load_fp_chunk(AArch64_Block *blk, const AArch64_Stack_Frame *frame,
+                               Ny_Slot_ID slot, int32_t off, AArch64_Reg dst) {
+    AArch64_Mem mem = {
+        .base = aarch64_reg_phys(AARCH64_FP, 8),
+        .disp = (int32_t)frame->slot_offsets[slot] + off,
+    };
+    AArch64_Instruction ldr = {
+        .opcode = AARCH64_OPC_LDR, .size = dst.size, .cond = 0, .op_count = 2, .shift = 0,
+        .ops = { aarch64_op_reg(dst), aarch64_op_mem(mem) }
+    };
+    aarch64_block_append_inst(blk, ldr);
+}
+
+static void emit_store_fp_chunk(AArch64_Block *blk, const AArch64_Stack_Frame *frame,
+                                AArch64_Reg src, Ny_Slot_ID slot, int32_t off) {
+    AArch64_Mem mem = {
+        .base = aarch64_reg_phys(AARCH64_FP, 8),
+        .disp = (int32_t)frame->slot_offsets[slot] + off,
+    };
+    AArch64_Instruction str = {
+        .opcode = AARCH64_OPC_STR, .size = src.size, .cond = 0, .op_count = 2, .shift = 0,
+        .ops = { aarch64_op_reg(src), aarch64_op_mem(mem) }
+    };
+    aarch64_block_append_inst(blk, str);
+}
+
+static void emit_store_sp(AArch64_Block *blk, AArch64_Reg src, int32_t sp_off) {
+    AArch64_Mem mem = {
+        .base = aarch64_reg_phys(AARCH64_SP, 8),
+        .disp = sp_off,
+    };
+    AArch64_Instruction str = {
+        .opcode = AARCH64_OPC_STR, .size = src.size, .cond = 0, .op_count = 2, .shift = 0,
+        .ops = { aarch64_op_reg(src), aarch64_op_mem(mem) }
+    };
+    aarch64_block_append_inst(blk, str);
+}
+
+static void emit_load_sp(AArch64_Block *blk, int32_t sp_off, AArch64_Reg dst) {
+    AArch64_Mem mem = {
+        .base = aarch64_reg_phys(AARCH64_SP, 8),
+        .disp = sp_off,
+    };
+    AArch64_Instruction ldr = {
+        .opcode = AARCH64_OPC_LDR, .size = dst.size, .cond = 0, .op_count = 2, .shift = 0,
+        .ops = { aarch64_op_reg(dst), aarch64_op_mem(mem) }
+    };
+    aarch64_block_append_inst(blk, ldr);
 }
 
 static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mfn,
@@ -689,10 +739,12 @@ static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mf
                 ny_type_is_aggregate(tt, arg_type)) {
                 Ny_Slot_ID arg_slot = mops[i].mem.stack_slot;
                 Ny_AAPCS64_ABI cls = aarch64_abi_classify_aggregate(tt, arg_type);
+                uint32_t arg_align = ny_type_align(tt, arg_type);
+                if (arg_align > 16) arg_align = 16;
 
                 if (cls.kind == NY_AAPCS64_GPR_AGG) {
-                    for (uint8_t c = 0; c < cls.reg_count && actual_copies < 64; c++) {
-                        if (gpr_idx < gpr_arg_count) {
+                    if (gpr_idx + cls.reg_count <= gpr_arg_count) {
+                        for (uint8_t c = 0; c < cls.reg_count && actual_copies < 64; c++) {
                             copies[actual_copies].is_mem = false;
                             copies[actual_copies].dst = aarch64_reg_phys(gpr_args[gpr_idx++], 8);
                             copies[actual_copies].is_fp = false;
@@ -701,14 +753,35 @@ static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mf
                             copies[actual_copies].src = aarch64_op_reg(tmp);
                             actual_copies++;
                         }
+                    } else {
+                        stack_offset = (stack_offset + arg_align - 1) & ~(arg_align - 1);
+                        uint32_t total = cls.reg_count * 8;
+                        AArch64_Reg tmp = aarch64_reg_phys(AARCH64_X16, 8);
+                        for (uint32_t off = 0; off < total; off += 8) {
+                            emit_load_chunk(xblk, frame, arg_slot, (int32_t)off, tmp);
+                            emit_store_sp(xblk, tmp, (int32_t)stack_offset);
+                            stack_offset += 8;
+                        }
                     }
                 } else if (cls.kind == NY_AAPCS64_HFA) {
-                    for (uint8_t c = 0; c < cls.reg_count && actual_copies < 64; c++) {
-                        if (fp_idx < fp_arg_count) {
+                    uint8_t fpsz = (cls.hfa_member == NY_TYPE_F32) ? 4 : 8;
+                    if (fp_idx + cls.reg_count <= fp_arg_count) {
+                        for (uint8_t c = 0; c < cls.reg_count && actual_copies < 64; c++) {
+                            AArch64_Reg vreg = aarch64_reg_phys(fp_args[fp_idx++], fpsz);
+                            emit_load_fp_chunk(xblk, frame, arg_slot, (int32_t)c * fpsz, vreg);
                             copies[actual_copies].is_mem = false;
-                            copies[actual_copies].dst = aarch64_reg_phys(fp_args[fp_idx++], 8);
+                            copies[actual_copies].dst = vreg;
                             copies[actual_copies].is_fp = true;
+                            copies[actual_copies].src = aarch64_op_reg(vreg);
                             actual_copies++;
+                        }
+                    } else {
+                        stack_offset = (stack_offset + arg_align - 1) & ~(arg_align - 1);
+                        AArch64_Reg vtmp = aarch64_reg_phys(AARCH64_V0, fpsz);
+                        for (uint8_t c = 0; c < cls.reg_count; c++) {
+                            emit_load_fp_chunk(xblk, frame, arg_slot, (int32_t)c * fpsz, vtmp);
+                            emit_store_sp(xblk, vtmp, (int32_t)stack_offset);
+                            stack_offset += fpsz;
                         }
                     }
                 } else if (cls.kind == NY_AAPCS64_INDIRECT) {
@@ -720,6 +793,12 @@ static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mf
                         emit_slot_addr(xblk, frame, arg_slot, tmp);
                         copies[actual_copies].src = aarch64_op_reg(tmp);
                         actual_copies++;
+                    } else {
+                        stack_offset = (stack_offset + 7) & ~7u;
+                        AArch64_Reg tmp = aarch64_reg_phys(AARCH64_X16, 8);
+                        emit_slot_addr(xblk, frame, arg_slot, tmp);
+                        emit_store_sp(xblk, tmp, (int32_t)stack_offset);
+                        stack_offset += 8;
                     }
                 }
                 continue;
@@ -856,7 +935,11 @@ static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mf
                     emit_store_chunk(xblk, frame, src, ret_slot, (int32_t)c * 8);
                 }
             } else if (ret_cls.kind == NY_AAPCS64_HFA) {
-                /* HFA return stored by caller into ret_slot handled elsewhere */
+                uint8_t fpsz = (ret_cls.hfa_member == NY_TYPE_F32) ? 4 : 8;
+                for (uint8_t c = 0; c < ret_cls.reg_count; c++) {
+                    AArch64_Reg src = aarch64_reg_phys(fp_args[c], fpsz);
+                    emit_store_fp_chunk(xblk, frame, src, ret_slot, (int32_t)c * fpsz);
+                }
             } else if (ret_cls.kind == NY_AAPCS64_INDIRECT) {
                 /* sret: callee wrote into the buffer pointed by X8, already in ret_slot */
             }
@@ -888,6 +971,14 @@ static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mf
                     AArch64_Reg dst = aarch64_reg_phys(gpr_args[c], 8);
                     emit_load_chunk(xblk, frame, ret_slot, (int32_t)c * 8, dst);
                 }
+            } else if (cls.kind == NY_AAPCS64_HFA) {
+                uint8_t fpsz = (cls.hfa_member == NY_TYPE_F32) ? 4 : 8;
+                size_t fp_ret_count = 0;
+                const AArch64_Phys_Reg *fp_ret = aarch64_abi_fp_arg_regs(abi, &fp_ret_count);
+                for (uint8_t c = 0; c < cls.reg_count && c < fp_ret_count; c++) {
+                    AArch64_Reg dst = aarch64_reg_phys(fp_ret[c], fpsz);
+                    emit_load_fp_chunk(xblk, frame, ret_slot, (int32_t)c * fpsz, dst);
+                }
             } else if (cls.kind == NY_AAPCS64_INDIRECT) {
                 AArch64_Reg sret_buf = aarch64_reg_phys(AARCH64_X8, 8);
                 if (frame->need_x8_save) {
@@ -903,8 +994,8 @@ static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mf
                     aarch64_block_append_inst(xblk, ldr);
                 }
                 AArch64_Reg scratch = aarch64_reg_phys(AARCH64_X16, 8);
-                uint32_t total = (cls.size + 7) / 8 * 8;
-                for (uint32_t off = 0; off < total; off += 8) {
+                uint32_t off = 0;
+                while (off + 8 <= cls.size) {
                     emit_load_chunk(xblk, frame, ret_slot, (int32_t)off, scratch);
                     AArch64_Mem dst_m = { .base = sret_buf, .disp = (int32_t)off };
                     AArch64_Instruction str = {
@@ -913,6 +1004,49 @@ static void lower_instruction(AArch64_Block *xblk, const Ny_Machine_Function *mf
                         .ops = { aarch64_op_reg(scratch), aarch64_op_mem(dst_m) }
                     };
                     aarch64_block_append_inst(xblk, str);
+                    off += 8;
+                }
+                if (off + 4 <= cls.size) {
+                    AArch64_Reg w_scratch = aarch64_reg_phys(AARCH64_X16, 4);
+                    AArch64_Mem src_m = {
+                        .base = aarch64_reg_phys(AARCH64_FP, 8),
+                        .disp = (int32_t)frame->slot_offsets[ret_slot] + (int32_t)off,
+                    };
+                    AArch64_Instruction ldr = {
+                        .opcode = AARCH64_OPC_LDR, .size = 4, .cond = 0,
+                        .op_count = 2, .shift = 0,
+                        .ops = { aarch64_op_reg(w_scratch), aarch64_op_mem(src_m) }
+                    };
+                    aarch64_block_append_inst(xblk, ldr);
+                    AArch64_Mem dst_m = { .base = sret_buf, .disp = (int32_t)off };
+                    AArch64_Instruction str = {
+                        .opcode = AARCH64_OPC_STR, .size = 4, .cond = 0,
+                        .op_count = 2, .shift = 0,
+                        .ops = { aarch64_op_reg(w_scratch), aarch64_op_mem(dst_m) }
+                    };
+                    aarch64_block_append_inst(xblk, str);
+                    off += 4;
+                }
+                while (off < cls.size) {
+                    AArch64_Reg w_scratch = aarch64_reg_phys(AARCH64_X16, 4);
+                    AArch64_Mem src_m = {
+                        .base = aarch64_reg_phys(AARCH64_FP, 8),
+                        .disp = (int32_t)frame->slot_offsets[ret_slot] + (int32_t)off,
+                    };
+                    AArch64_Instruction ldr = {
+                        .opcode = AARCH64_OPC_LDR, .size = 4, .cond = 0,
+                        .op_count = 2, .shift = 0,
+                        .ops = { aarch64_op_reg(w_scratch), aarch64_op_mem(src_m) }
+                    };
+                    aarch64_block_append_inst(xblk, ldr);
+                    AArch64_Mem dst_m = { .base = sret_buf, .disp = (int32_t)off };
+                    AArch64_Instruction str = {
+                        .opcode = AARCH64_OPC_STR, .size = 4, .cond = 0,
+                        .op_count = 2, .shift = 0,
+                        .ops = { aarch64_op_reg(w_scratch), aarch64_op_mem(dst_m) }
+                    };
+                    aarch64_block_append_inst(xblk, str);
+                    off += 4;
                 }
             }
         } else if (minst->op_count > 0 && mops[0].kind != NY_MOP_KIND_NONE) {
@@ -995,24 +1129,46 @@ static bool aarch64_lower_func_impl(const Ny_Target *target, const Ny_Machine_Fu
                 if (tt && ptype != NY_INVALID_TYPE && ny_type_is_aggregate(tt, ptype)) {
                     Ny_Slot_ID pslot = mfn->param_slots[p];
                     Ny_AAPCS64_ABI cls = aarch64_abi_classify_aggregate(tt, ptype);
+                    uint32_t palign = ny_type_align(tt, ptype);
+                    if (palign > 16) palign = 16;
 
                     if (cls.kind == NY_AAPCS64_GPR_AGG) {
-                        for (uint8_t c = 0; c < cls.reg_count; c++) {
-                            if (gpr_idx < gpr_abi_count) {
+                        if (gpr_idx + cls.reg_count <= gpr_abi_count) {
+                            for (uint8_t c = 0; c < cls.reg_count; c++) {
                                 AArch64_Reg src = aarch64_reg_phys(gpr_args[gpr_idx++], 8);
                                 emit_store_chunk(xblk, &out_fn->frame, src, pslot, (int32_t)c * 8);
                             }
+                        } else {
+                            uint32_t stack_off = 16 + (uint32_t)gpr_idx * 8;
+                            for (uint8_t c = 0; c < cls.reg_count; c++) {
+                                AArch64_Reg tmp = aarch64_reg_phys(AARCH64_X16, 8);
+                                emit_load_sp(xblk, (int32_t)(stack_off + c * 8), tmp);
+                                emit_store_chunk(xblk, &out_fn->frame, tmp, pslot, (int32_t)c * 8);
+                            }
+                            gpr_idx = gpr_abi_count;
                         }
                     } else if (cls.kind == NY_AAPCS64_HFA) {
-                        for (uint8_t c = 0; c < cls.reg_count; c++) {
-                            if (fp_idx < fp_abi_count) fp_idx++;
+                        uint8_t fpsz = (cls.hfa_member == NY_TYPE_F32) ? 4 : 8;
+                        if (fp_idx + cls.reg_count <= fp_abi_count) {
+                            for (uint8_t c = 0; c < cls.reg_count; c++) {
+                                AArch64_Reg src = aarch64_reg_phys(fp_args[fp_idx++], fpsz);
+                                emit_store_fp_chunk(xblk, &out_fn->frame, src, pslot, (int32_t)c * fpsz);
+                            }
+                        } else {
+                            uint32_t stack_off = 16 + (uint32_t)fp_idx * fpsz;
+                            for (uint8_t c = 0; c < cls.reg_count; c++) {
+                                AArch64_Reg vtmp = aarch64_reg_phys(AARCH64_V0, fpsz);
+                                emit_load_sp(xblk, (int32_t)(stack_off + c * fpsz), vtmp);
+                                emit_store_fp_chunk(xblk, &out_fn->frame, vtmp, pslot, (int32_t)c * fpsz);
+                            }
+                            fp_idx = fp_abi_count;
                         }
                     } else if (cls.kind == NY_AAPCS64_INDIRECT) {
                         if (gpr_idx < gpr_abi_count) {
                             AArch64_Reg ptr = aarch64_reg_phys(gpr_args[gpr_idx++], 8);
                             AArch64_Reg scratch = aarch64_reg_phys(AARCH64_X17, 8);
-                            uint32_t total = (cls.size + 7) / 8 * 8;
-                            for (uint32_t off = 0; off < total; off += 8) {
+                            uint32_t off = 0;
+                            while (off + 8 <= cls.size) {
                                 AArch64_Mem src_m = { .base = ptr, .disp = (int32_t)off };
                                 AArch64_Instruction ldr = {
                                     .opcode = AARCH64_OPC_LDR, .size = 8, .cond = 0,
@@ -1021,7 +1177,31 @@ static bool aarch64_lower_func_impl(const Ny_Target *target, const Ny_Machine_Fu
                                 };
                                 aarch64_block_append_inst(xblk, ldr);
                                 emit_store_chunk(xblk, &out_fn->frame, scratch, pslot, (int32_t)off);
+                                off += 8;
                             }
+                            while (off < cls.size) {
+                                AArch64_Reg w_scratch = aarch64_reg_phys(AARCH64_X17, 4);
+                                AArch64_Mem src_m = { .base = ptr, .disp = (int32_t)off };
+                                AArch64_Instruction ldr = {
+                                    .opcode = AARCH64_OPC_LDR, .size = 4, .cond = 0,
+                                    .op_count = 2, .shift = 0,
+                                    .ops = { aarch64_op_reg(w_scratch), aarch64_op_mem(src_m) }
+                                };
+                                aarch64_block_append_inst(xblk, ldr);
+                                AArch64_Mem dst_m = {
+                                    .base = aarch64_reg_phys(AARCH64_FP, 8),
+                                    .disp = (int32_t)out_fn->frame.slot_offsets[pslot] + (int32_t)off,
+                                };
+                                AArch64_Instruction str = {
+                                    .opcode = AARCH64_OPC_STR, .size = 4, .cond = 0,
+                                    .op_count = 2, .shift = 0,
+                                    .ops = { aarch64_op_reg(w_scratch), aarch64_op_mem(dst_m) }
+                                };
+                                aarch64_block_append_inst(xblk, str);
+                                off += 4;
+                            }
+                        } else {
+                            gpr_idx = gpr_abi_count;
                         }
                     }
                     continue;
@@ -1035,11 +1215,21 @@ static bool aarch64_lower_func_impl(const Ny_Target *target, const Ny_Machine_Fu
                     if (fp_idx < fp_abi_count) {
                         AArch64_Reg src = aarch64_reg_phys(fp_args[fp_idx++], vreg.size);
                         emit_mov(xblk, vreg, aarch64_op_reg(src));
+                    } else {
+                        uint32_t stack_off = 16 + (uint32_t)fp_idx * 8;
+                        AArch64_Reg tmp = aarch64_reg_phys(AARCH64_X16, vreg.size);
+                        emit_load_sp(xblk, (int32_t)stack_off, tmp);
+                        emit_mov(xblk, vreg, aarch64_op_reg(tmp));
                     }
                 } else {
                     if (gpr_idx < gpr_abi_count) {
                         AArch64_Reg src = aarch64_reg_phys(gpr_args[gpr_idx++], vreg.size);
                         emit_mov(xblk, vreg, aarch64_op_reg(src));
+                    } else {
+                        uint32_t stack_off = 16 + (uint32_t)gpr_idx * 8;
+                        AArch64_Reg tmp = aarch64_reg_phys(AARCH64_X16, vreg.size);
+                        emit_load_sp(xblk, (int32_t)stack_off, tmp);
+                        emit_mov(xblk, vreg, aarch64_op_reg(tmp));
                     }
                 }
             }
