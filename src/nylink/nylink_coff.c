@@ -81,6 +81,13 @@ bool nylink_read_coff(Nylink_Context *ctx, uint32_t obj_idx) {
         return false;
     }
 
+    if (ctx->machine == 0) {
+        ctx->machine = EM_X86_64;
+    } else if (ctx->machine != EM_X86_64) {
+        nylink_diag_add(ctx, "architecture mismatch: cannot add COFF object to non-x86_64 context", obj->name, nullptr);
+        return false;
+    }
+
     uint16_t num_sections = fhdr->NumberOfSections;
     size_t shdr_offset = sizeof(Coff_File_Header) + fhdr->SizeOfOptionalHeader;
     if (shdr_offset > size || (num_sections * sizeof(Coff_Section_Header)) > size ||
@@ -288,8 +295,15 @@ bool nylink_read_coff(Nylink_Context *ctx, uint32_t obj_idx) {
                 addend = -4;
             }
 
+            if (crel->SymbolTableIndex >= num_symbols) {
+                nylink_diag_add(ctx, "malformed object: relocation symbol index out of bounds", obj->name, tsec->name);
+                ny_free(coff_to_nylink_sec, (num_sections + 1) * sizeof(uint32_t));
+                if (coff_to_nylink_sym) ny_free(coff_to_nylink_sym, num_symbols * sizeof(uint32_t));
+                return false;
+            }
+
             uint32_t nylink_sym_id = UINT32_MAX;
-            if (coff_to_nylink_sym && crel->SymbolTableIndex < num_symbols) {
+            if (coff_to_nylink_sym) {
                 nylink_sym_id = coff_to_nylink_sym[crel->SymbolTableIndex];
             }
 

@@ -286,12 +286,20 @@ bool nylink_add_object(Nylink_Context *ctx, const char *name, const uint8_t *dat
     obj->size = size;
 
     if (data[0] == 0x7F && data[1] == 'E' && data[2] == 'L' && data[3] == 'F') {
+        if (obj_idx > 0 && ctx->objects[0].format != NYLINK_FORMAT_ELF64) {
+            nylink_diag_add(ctx, "format mismatch: cannot mix ELF object with non-ELF objects in same link context", obj->name, nullptr);
+            return false;
+        }
         obj->format = NYLINK_FORMAT_ELF64;
         return nylink_read_elf64(ctx, obj_idx);
     }
 
     uint16_t machine = (uint16_t)(data[0] | (data[1] << 8));
     if (machine == 0x8664) {
+        if (obj_idx > 0 && ctx->objects[0].format != NYLINK_FORMAT_COFF) {
+            nylink_diag_add(ctx, "format mismatch: cannot mix COFF object with non-COFF objects in same link context", obj->name, nullptr);
+            return false;
+        }
         obj->format = NYLINK_FORMAT_COFF;
         return nylink_read_coff(ctx, obj_idx);
     }

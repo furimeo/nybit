@@ -504,7 +504,12 @@ void test_cli_link_shared_options(void) {
     remove("bin/libcli_foo.so");
 
     /* 2. Success of --shared on PE target (emits DLL and .lib) */
-    int ret_pe = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/cli_so_input.o --export=so_func -o bin/foo.dll");
+    Ny_Object_Buffer coff_obj;
+    ny_obj_buf_init(&coff_obj);
+    emit_cli_dummy_coff(&coff_obj, "so_func", false, nullptr);
+    write_file("bin/cli_pe_so_input.obj", coff_obj.bytes, coff_obj.count);
+
+    int ret_pe = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/cli_pe_so_input.obj --export=so_func -o bin/foo.dll");
     TEST_ASSERT_EQ(ret_pe, 0);
 
     FILE *f_dll = fopen("bin/foo.dll", "rb");
@@ -516,6 +521,9 @@ void test_cli_link_shared_options(void) {
     TEST_ASSERT(f_lib != nullptr);
     fclose(f_lib);
     remove("bin/foo.lib");
+
+    remove("bin/cli_pe_so_input.obj");
+    ny_obj_buf_destroy(&coff_obj);
 
     remove("bin/cli_so_input.o");
     ny_obj_buf_destroy(&obj1);

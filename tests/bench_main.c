@@ -127,8 +127,56 @@ static const char *s_prog_module =
     "    @return %d;\n"
     ";;\n";
 
+static const char *s_prog_aggregate =
+    "@type Pair = struct { a: i32, b: i32 };\n"
+    "@type Big = struct { a: i64, b: i64, c: i64 };\n"
+    "\n"
+    "@function fwd_pair(%p: Pair) -> Pair;\n"
+    ".entry;\n"
+    "    @return %p;\n"
+    ";;\n"
+    "\n"
+    "@function fwd_big(%b: Big) -> Big;\n"
+    ".entry;\n"
+    "    @return %b;\n"
+    ";;\n"
+    "\n"
+    "@function main(%p: Pair, %b: Big) -> Pair;\n"
+    ".entry;\n"
+    "    %p2 = call @fwd_pair, %p;\n"
+    "    %b2 = call @fwd_big, %b;\n"
+    "    @return %p2;\n"
+    ";;\n";
+
+static const char *s_prog_hfa =
+    "@type Vec3 = struct { x: f32, y: f32, z: f32 };\n"
+    "@type Vec4 = struct { x: f32, y: f32, z: f32, w: f32 };\n"
+    "\n"
+    "@function fwd_vec3(%v: Vec3) -> Vec3;\n"
+    ".entry;\n"
+    "    @return %v;\n"
+    ";;\n"
+    "\n"
+    "@function fwd_vec4(%v: Vec4) -> Vec4;\n"
+    ".entry;\n"
+    "    @return %v;\n"
+    ";;\n"
+    "\n"
+    "@function main(%v3: Vec3, %v4: Vec4) -> Vec3;\n"
+    ".entry;\n"
+    "    %r3 = call @fwd_vec3, %v3;\n"
+    "    %r4 = call @fwd_vec4, %v4;\n"
+    "    @return %r3;\n"
+    ";;\n";
+
 static double get_time_us(LARGE_INTEGER start, LARGE_INTEGER end, LARGE_INTEGER freq) {
     return (double)(end.QuadPart - start.QuadPart) * 1000000.0 / (double)freq.QuadPart;
+}
+
+static int cmp_double(const void *a, const void *b) {
+    double da = *(const double *)a;
+    double db = *(const double *)b;
+    return (da > db) - (da < db);
 }
 
 static void run_bench_case(const Bench_Case *bc, int iterations) {
@@ -142,9 +190,16 @@ static void run_bench_case(const Bench_Case *bc, int iterations) {
 
     size_t src_len = strlen(bc->ir_src);
 
+    /* Warm-up: 5 iterations */
+    for (int w = 0; w < 5; w++) {
+        Nygen_Result res = nygen_compile(bc->ir_src, src_len, &cfg);
+        nygen_result_destroy(&res);
+    }
+
     size_t baseline_peak = g_ny_mem_tracker.peak_allocated;
     size_t out_size = 0;
 
+    double *samples = (double *)ny_alloc((size_t)iterations * sizeof(double));
     double min_us = 1e9;
     double max_us = 0.0;
     double total_us = 0.0;
@@ -164,12 +219,24 @@ static void run_bench_case(const Bench_Case *bc, int iterations) {
         nygen_result_destroy(&res);
 
         double us = get_time_us(t0, t1, freq);
+        samples[i] = us;
         if (us < min_us) min_us = us;
         if (us > max_us) max_us = us;
         total_us += us;
     }
 
-    double avg_us = total_us / iterations;
+    qsort(samples, (size_t)iterations, sizeof(double), cmp_double);
+    int trim = iterations / 20;
+    if (trim < 1) trim = 1;
+    double trim_total = 0.0;
+    int counted = 0;
+    for (int i = trim; i < iterations - trim; i++) {
+        trim_total += samples[i];
+        counted++;
+    }
+    double avg_us = counted > 0 ? (trim_total / counted) : (total_us / iterations);
+    ny_free(samples, (size_t)iterations * sizeof(double));
+
     size_t peak_diff = g_ny_mem_tracker.peak_allocated > baseline_peak ?
                        (g_ny_mem_tracker.peak_allocated - baseline_peak) : 0;
 
@@ -281,10 +348,12 @@ int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
     Bench_Case cases[] = {
-        { "tiny",     s_prog_tiny },
-        { "medium",   s_prog_medium },
-        { "pressure", s_prog_pressure },
-        { "module",   s_prog_module },
+        { "tiny",      s_prog_tiny },
+        { "medium",    s_prog_medium },
+        { "pressure",  s_prog_pressure },
+        { "module",    s_prog_module },
+        { "aggregate", s_prog_aggregate },
+        { "hfa",       s_prog_hfa },
     };
     int num_cases = (int)(sizeof(cases) / sizeof(cases[0]));
 

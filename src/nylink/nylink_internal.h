@@ -6,6 +6,9 @@
 #include "nylink/nylink.h"
 #include "nybit/support.h"
 
+#define EM_X86_64 62
+#define EM_AARCH64 183
+
 typedef struct Nylink_Object {
     char *name;
     Nylink_Format format;

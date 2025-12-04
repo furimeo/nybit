@@ -14,9 +14,6 @@
 #define R_AARCH64_JUMP_SLOT 1026
 #define R_AARCH64_RELATIVE 1027
 
-#define EM_X86_64 62
-#define EM_AARCH64 183
-
 static void write_word64(uint8_t *ptr, uint64_t val) {
     ptr[0] = (uint8_t)(val & 0xFF);
     ptr[1] = (uint8_t)((val >> 8) & 0xFF);
@@ -399,6 +396,13 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
             }
 
             int64_t val = (int64_t)(target_va + (uint64_t)reloc->addend) - (int64_t)place_va;
+            if ((val & 3) != 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "relocation error: branch displacement %lld is not 4-byte aligned for symbol '%s'", (long long)val, sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
             int64_t imm26 = val >> 2;
             if (imm26 < -(1LL << 25) || imm26 >= (1LL << 25)) {
                 char msg[256];
@@ -512,6 +516,14 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
 
             uint64_t S = target_va + (uint64_t)reloc->addend;
             uint32_t scale = (reloc->type == NYLINK_RELOC_AARCH64_LDST64_ABS_LO12_NC) ? 8 : 4;
+            if ((S & (scale - 1)) != 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "relocation error: target address 0x%llx is not %u-byte aligned for symbol '%s'",
+                         (unsigned long long)S, scale, sym_name);
+                nylink_diag_add(ctx, msg, in_sec->name, sym_name);
+                success = false;
+                continue;
+            }
             uint32_t imm12 = (uint32_t)((S & 0xFFF) / scale);
 
             uint32_t word = (uint32_t)out_sec->data[target_sec_offset]

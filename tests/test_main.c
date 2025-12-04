@@ -171,6 +171,7 @@ void test_nylink_pe_dll_structural_validation(void);
 void test_nylink_pe_import_structural_validation(void);
 void test_nylink_pe_base_reloc_validation(void);
 void test_nylink_pe_negative_tests(void);
+void test_nylink_hardening_rejections(void);
 
 void test_linux_runtime_env_detection(void);
 void test_linux_runtime_shared_lib_structure(void);
@@ -445,6 +446,7 @@ int main(void) {
     RUN_TEST(test_nylink_pe_import_structural_validation);
     RUN_TEST(test_nylink_pe_base_reloc_validation);
     RUN_TEST(test_nylink_pe_negative_tests);
+    RUN_TEST(test_nylink_hardening_rejections);
 
     RUN_TEST(test_linux_runtime_env_detection);
     RUN_TEST(test_linux_runtime_shared_lib_structure);

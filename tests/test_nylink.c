@@ -152,6 +152,12 @@ typedef struct Pe_Test_Section_Header {
     uint16_t NumberOfLinenumbers;
     uint32_t Characteristics;
 } Pe_Test_Section_Header;
+
+typedef struct Pe_Test_Relocation {
+    uint32_t VirtualAddress;
+    uint32_t SymbolTableIndex;
+    uint16_t Type;
+} Pe_Test_Relocation;
 #pragma pack(pop)
 
 static void emit_dummy_elf_with_addend(Ny_Object_Buffer *obj_buf, const char *fn_name, bool add_reloc, const char *reloc_target, int64_t addend) {
@@ -2402,6 +2408,120 @@ void test_nylink_pe_negative_tests(void) {
 
         fclose(f);
         remove(dll_path);
+        nylink_context_destroy(ctx);
+        ny_obj_buf_destroy(&obj);
+    }
+}
+
+void test_nylink_hardening_rejections(void) {
+    /* 1. Rejection of mixed ELF + COFF objects in link context */
+    {
+        Ny_Object_Buffer elf_obj;
+        ny_obj_buf_init(&elf_obj);
+        emit_dummy_elf(&elf_obj, "fn_elf", false, nullptr);
+
+        Ny_Object_Buffer coff_obj;
+        ny_obj_buf_init(&coff_obj);
+        emit_dummy_coff(&coff_obj, "fn_coff", false, nullptr);
+
+        Nylink_Context *ctx = nylink_context_create();
+        TEST_ASSERT(nylink_add_object(ctx, "obj1.o", elf_obj.bytes, elf_obj.count));
+        /* Adding COFF to ELF context must fail */
+        TEST_ASSERT(!nylink_add_object(ctx, "obj2.obj", coff_obj.bytes, coff_obj.count));
+        TEST_ASSERT(nylink_has_errors(ctx));
+
+        nylink_context_destroy(ctx);
+        ny_obj_buf_destroy(&elf_obj);
+        ny_obj_buf_destroy(&coff_obj);
+    }
+
+    /* 2. Target format mismatch: PE target with ELF objects, and ELF target with COFF objects */
+    {
+        Ny_Object_Buffer elf_obj;
+        ny_obj_buf_init(&elf_obj);
+        emit_dummy_elf(&elf_obj, "main", false, nullptr);
+
+        Nylink_Context *ctx = nylink_context_create();
+        TEST_ASSERT(nylink_add_object(ctx, "elf_main.o", elf_obj.bytes, elf_obj.count));
+        TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+        Nylink_Config cfg_pe = {
+            .target_format = NYLINK_TARGET_PE,
+            .output_mode = NYLINK_OUTPUT_EXECUTABLE,
+            .entry_point = "main",
+        };
+        TEST_ASSERT(!nylink_layout(ctx, &cfg_pe));
+        TEST_ASSERT(nylink_has_errors(ctx));
+
+        nylink_context_destroy(ctx);
+        ny_obj_buf_destroy(&elf_obj);
+    }
+    {
+        Ny_Object_Buffer coff_obj;
+        ny_obj_buf_init(&coff_obj);
+        emit_dummy_coff(&coff_obj, "main", false, nullptr);
+
+        Nylink_Context *ctx = nylink_context_create();
+        TEST_ASSERT(nylink_add_object(ctx, "coff_main.obj", coff_obj.bytes, coff_obj.count));
+        TEST_ASSERT(nylink_resolve_symbols(ctx));
+
+        Nylink_Config cfg_elf = {
+            .target_format = NYLINK_TARGET_ELF64,
+            .output_mode = NYLINK_OUTPUT_EXECUTABLE,
+            .entry_point = "main",
+        };
+        TEST_ASSERT(!nylink_layout(ctx, &cfg_elf));
+        TEST_ASSERT(nylink_has_errors(ctx));
+
+        nylink_context_destroy(ctx);
+        ny_obj_buf_destroy(&coff_obj);
+    }
+
+    /* 3. ELF relocation symbol index out-of-bounds */
+    {
+        Ny_Object_Buffer obj;
+        ny_obj_buf_init(&obj);
+        emit_dummy_elf(&obj, "caller", true, "target_fn");
+
+        Elf64_Test_Ehdr *ehdr = (Elf64_Test_Ehdr *)obj.bytes;
+        Elf64_Test_Shdr *shdrs = (Elf64_Test_Shdr *)(obj.bytes + ehdr->e_shoff);
+        const char *shstrtab = (const char *)(obj.bytes + shdrs[ehdr->e_shstrndx].sh_offset);
+        for (uint16_t s = 1; s < ehdr->e_shnum; s++) {
+            if (strcmp(shstrtab + shdrs[s].sh_name, ".rela.text") == 0) {
+                Elf64_Test_Rela *relas = (Elf64_Test_Rela *)(obj.bytes + shdrs[s].sh_offset);
+                relas[0].r_info = ((uint64_t)99999 << 32) | (relas[0].r_info & 0xFFFFFFFFULL);
+                break;
+            }
+        }
+
+        Nylink_Context *ctx = nylink_context_create();
+        TEST_ASSERT(!nylink_add_object(ctx, "corrupted_elf.o", obj.bytes, obj.count));
+        TEST_ASSERT(nylink_has_errors(ctx));
+
+        nylink_context_destroy(ctx);
+        ny_obj_buf_destroy(&obj);
+    }
+
+    /* 4. COFF relocation symbol index out-of-bounds */
+    {
+        Ny_Object_Buffer obj;
+        ny_obj_buf_init(&obj);
+        emit_dummy_coff(&obj, "caller", true, "target_fn");
+
+        Pe_Test_File_Header *fhdr = (Pe_Test_File_Header *)obj.bytes;
+        Pe_Test_Section_Header *shdrs = (Pe_Test_Section_Header *)(obj.bytes + sizeof(Pe_Test_File_Header) + fhdr->SizeOfOptionalHeader);
+        for (uint16_t s = 0; s < fhdr->NumberOfSections; s++) {
+            if (shdrs[s].NumberOfRelocations > 0 && shdrs[s].PointerToRelocations > 0) {
+                Pe_Test_Relocation *reloc = (Pe_Test_Relocation *)(obj.bytes + shdrs[s].PointerToRelocations);
+                reloc->SymbolTableIndex = 99999;
+                break;
+            }
+        }
+
+        Nylink_Context *ctx = nylink_context_create();
+        TEST_ASSERT(!nylink_add_object(ctx, "corrupted_coff.obj", obj.bytes, obj.count));
+        TEST_ASSERT(nylink_has_errors(ctx));
+
         nylink_context_destroy(ctx);
         ny_obj_buf_destroy(&obj);
     }

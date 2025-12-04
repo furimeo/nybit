@@ -179,6 +179,22 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
     bool is_elf_target = !cfg || cfg->target_format == NYLINK_TARGET_ELF64;
     ctx->target_format = cfg ? cfg->target_format : NYLINK_TARGET_ELF64;
 
+    if (cfg && cfg->target_format == NYLINK_TARGET_PE) {
+        for (size_t i = 0; i < ctx->object_count; i++) {
+            if (ctx->objects[i].format != NYLINK_FORMAT_COFF) {
+                nylink_diag_add(ctx, "target mismatch: cannot emit PE executable from ELF objects", ctx->objects[i].name, nullptr);
+                return false;
+            }
+        }
+    } else if (cfg && cfg->target_format == NYLINK_TARGET_ELF64) {
+        for (size_t i = 0; i < ctx->object_count; i++) {
+            if (ctx->objects[i].format != NYLINK_FORMAT_ELF64) {
+                nylink_diag_add(ctx, "target mismatch: cannot emit ELF executable from COFF objects", ctx->objects[i].name, nullptr);
+                return false;
+            }
+        }
+    }
+
     if (cfg && (cfg->output_mode == NYLINK_OUTPUT_SHARED || cfg->output_mode == NYLINK_OUTPUT_PIE || cfg->output_mode == NYLINK_OUTPUT_DLL)) {
         ctx->is_shared = (cfg->output_mode == NYLINK_OUTPUT_SHARED || cfg->output_mode == NYLINK_OUTPUT_DLL);
         ctx->output_mode = cfg->output_mode;

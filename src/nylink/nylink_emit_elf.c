@@ -14,8 +14,6 @@
 #define EV_CURRENT 1
 #define ET_EXEC 2
 #define ET_DYN 3
-#define EM_X86_64 62
-#define EM_AARCH64 183
 
 #define PT_LOAD 1
 #define PT_DYNAMIC 2

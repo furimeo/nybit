@@ -14,8 +14,6 @@
 #define EV_CURRENT 1
 #define ET_REL 1
 #define ET_DYN 3
-#define EM_X86_64 62
-#define EM_AARCH64 183
 
 #define SHT_NULL 0
 #define SHT_PROGBITS 1
@@ -420,8 +418,15 @@ bool nylink_read_elf64(Nylink_Context *ctx, uint32_t obj_idx) {
                     }
                 }
 
+                if (sym_idx >= elf_sym_count) {
+                    nylink_diag_add(ctx, "malformed object: relocation symbol index out of bounds", obj->name, tsec->name);
+                    ny_free(elf_to_nylink_sec, shnum * sizeof(uint32_t));
+                    if (elf_to_nylink_sym) ny_free(elf_to_nylink_sym, elf_sym_count * sizeof(uint32_t));
+                    return false;
+                }
+
                 uint32_t nylink_sym_id = UINT32_MAX;
-                if (elf_to_nylink_sym && sym_idx < elf_sym_count) {
+                if (elf_to_nylink_sym) {
                     nylink_sym_id = elf_to_nylink_sym[sym_idx];
                 }
 

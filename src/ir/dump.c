@@ -44,12 +44,12 @@ static void sb_printf(Str_Builder *sb, const char *fmt, ...) {
         if ((size_t)n < sizeof(buf)) {
             sb_append(sb, buf);
         } else {
-            char *big = (char *)malloc((size_t)n + 1);
+            char *big = (char *)ny_alloc((size_t)n + 1);
             va_start(args, fmt);
             vsnprintf(big, (size_t)n + 1, fmt, args);
             va_end(args);
             sb_append(sb, big);
-            free(big);
+            ny_free(big, (size_t)n + 1);
         }
     }
 }
