@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include <nybit/opt.h>
 #include <nybit/analysis.h>
@@ -166,7 +166,7 @@ bool ny_opt_pass_gvn(Ny_Module *mod, Ny_Function *fn, Ny_Analysis_Manager *am) {
 
             if (inst->result != NY_INVALID_VALUE && is_gvn_candidate((Ny_Opcode)inst->opcode) && !(inst->flags & NY_FLAG_VOLATILE)) {
                 GVN_Key key = make_gvn_key(fn, inst);
-                ssize_t match_idx = -1;
+                ptrdiff_t match_idx = -1;
 
                 for (size_t i = 0; i < table_count; i++) {
                     if (gvn_key_equal(table[i].key, key)) {
@@ -179,7 +179,7 @@ bool ny_opt_pass_gvn(Ny_Module *mod, Ny_Function *fn, Ny_Analysis_Manager *am) {
                         }
 
                         if (can_replace) {
-                            match_idx = (ssize_t)i;
+                            match_idx = (ptrdiff_t)i;
                             break;
                         }
                     }

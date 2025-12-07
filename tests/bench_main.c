@@ -3,7 +3,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include <time.h>
+#endif
 #include <nygen/nygen.h>
 #include <nyjit/nyjit.h>
 #include <nybit/support.h>
@@ -169,9 +173,35 @@ static const char *s_prog_hfa =
     "    @return %r3;\n"
     ";;\n";
 
-static double get_time_us(LARGE_INTEGER start, LARGE_INTEGER end, LARGE_INTEGER freq) {
+#if defined(_WIN32)
+typedef LARGE_INTEGER Bench_Time;
+static Bench_Time bench_now(void) {
+    Bench_Time t;
+    QueryPerformanceCounter(&t);
+    return t;
+}
+static double get_time_us(Bench_Time start, Bench_Time end) {
+    static LARGE_INTEGER freq;
+    static int initialized = 0;
+    if (!initialized) {
+        QueryPerformanceFrequency(&freq);
+        initialized = 1;
+    }
     return (double)(end.QuadPart - start.QuadPart) * 1000000.0 / (double)freq.QuadPart;
 }
+#else
+typedef struct timespec Bench_Time;
+static Bench_Time bench_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts;
+}
+static double get_time_us(Bench_Time start, Bench_Time end) {
+    double sec = (double)(end.tv_sec - start.tv_sec);
+    double nsec = (double)(end.tv_nsec - start.tv_nsec);
+    return sec * 1000000.0 + nsec / 1000.0;
+}
+#endif
 
 static int cmp_double(const void *a, const void *b) {
     double da = *(const double *)a;
@@ -180,9 +210,6 @@ static int cmp_double(const void *a, const void *b) {
 }
 
 static void run_bench_case(const Bench_Case *bc, int iterations) {
-    LARGE_INTEGER freq;
-    QueryPerformanceFrequency(&freq);
-
     Nygen_Config cfg;
     nygen_config_init(&cfg);
     cfg.output_kind = NYGEN_OUTPUT_OBJECT;
@@ -205,10 +232,9 @@ static void run_bench_case(const Bench_Case *bc, int iterations) {
     double total_us = 0.0;
 
     for (int i = 0; i < iterations; i++) {
-        LARGE_INTEGER t0, t1;
-        QueryPerformanceCounter(&t0);
+        Bench_Time t0 = bench_now();
         Nygen_Result res = nygen_compile(bc->ir_src, src_len, &cfg);
-        QueryPerformanceCounter(&t1);
+        Bench_Time t1 = bench_now();
 
         if (!res.success) {
             fprintf(stderr, "bench %s failed\n", bc->name);
@@ -218,7 +244,7 @@ static void run_bench_case(const Bench_Case *bc, int iterations) {
         out_size = res.size;
         nygen_result_destroy(&res);
 
-        double us = get_time_us(t0, t1, freq);
+        double us = get_time_us(t0, t1);
         samples[i] = us;
         if (us < min_us) min_us = us;
         if (us > max_us) max_us = us;
@@ -245,17 +271,13 @@ static void run_bench_case(const Bench_Case *bc, int iterations) {
 }
 
 static void run_jit_bench_case(const Bench_Case *bc, int iterations) {
-    LARGE_INTEGER freq;
-    QueryPerformanceFrequency(&freq);
-
     size_t src_len = strlen(bc->ir_src);
     double min_us = 1e9;
     double max_us = 0.0;
     double total_us = 0.0;
 
     for (int i = 0; i < iterations; i++) {
-        LARGE_INTEGER t0, t1;
-        QueryPerformanceCounter(&t0);
+        Bench_Time t0 = bench_now();
 
         Nygen_Config gen_cfg;
         nygen_config_init(&gen_cfg);
@@ -282,8 +304,8 @@ static void run_jit_bench_case(const Bench_Case *bc, int iterations) {
         nyjit_destroy(jit);
         nygen_encoded_module_destroy(&emod);
 
-        QueryPerformanceCounter(&t1);
-        double us = get_time_us(t0, t1, freq);
+        Bench_Time t1 = bench_now();
+        double us = get_time_us(t0, t1);
         if (us < min_us) min_us = us;
         if (us > max_us) max_us = us;
         total_us += us;
@@ -295,9 +317,6 @@ static void run_jit_bench_case(const Bench_Case *bc, int iterations) {
 }
 
 static void run_nyir_bench_case(const Bench_Case *bc, int iterations) {
-    LARGE_INTEGER freq;
-    QueryPerformanceFrequency(&freq);
-
     size_t src_len = strlen(bc->ir_src);
 
     Nygen_Config cfg;
@@ -314,21 +333,20 @@ static void run_nyir_bench_case(const Bench_Case *bc, int iterations) {
     for (int i = 0; i < iterations; i++) {
         uint8_t *data = NULL;
         size_t size = 0;
-        LARGE_INTEGER t0, t1;
-        QueryPerformanceCounter(&t0);
+        Bench_Time t0 = bench_now();
         bool s_ok = nygen_compile_nyir(bc->ir_src, src_len, &cfg, &data, &size, NULL, NULL);
-        QueryPerformanceCounter(&t1);
+        Bench_Time t1 = bench_now();
         if (!s_ok) exit(1);
-        double us = get_time_us(t0, t1, freq);
+        double us = get_time_us(t0, t1);
         if (us < ser_min) ser_min = us;
         if (us > ser_max) ser_max = us;
         ser_total += us;
 
-        QueryPerformanceCounter(&t0);
+        t0 = bench_now();
         Ny_Context *ctx = nygen_load_nyir(data, size, NULL, NULL);
-        QueryPerformanceCounter(&t1);
+        t1 = bench_now();
         if (!ctx) exit(1);
-        us = get_time_us(t0, t1, freq);
+        us = get_time_us(t0, t1);
         if (us < deser_min) deser_min = us;
         if (us > deser_max) deser_max = us;
         deser_total += us;

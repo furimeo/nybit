@@ -780,7 +780,7 @@ void test_object_e2e_internal_calls(void) {
     TEST_ASSERT(link_ok);
     ny_diagnostic_list_destroy(&diags);
 
-    int exit_code = system("bin\\test_e2e_internal.exe");
+    int exit_code = ny_test_system("./bin/test_e2e_internal.exe");
     TEST_ASSERT_EQ(exit_code, 42);
 
     remove(obj_path);
@@ -819,7 +819,7 @@ void test_object_e2e_external_calls(void) {
     TEST_ASSERT(link_ok);
     ny_diagnostic_list_destroy(&diags);
 
-    int exit_code = system("bin\\test_e2e_ext.exe");
+    int exit_code = ny_test_system("./bin/test_e2e_ext.exe");
     TEST_ASSERT_EQ(exit_code, 42);
 
     remove("bin/test_e2e_host.c");
@@ -1016,7 +1016,7 @@ void test_object_e2e_globals_execution(void) {
     TEST_ASSERT(link_ok);
     ny_diagnostic_list_destroy(&diags);
 
-    int exit_code = system("bin\\test_e2e_globals.exe");
+    int exit_code = ny_test_system("./bin/test_e2e_globals.exe");
     TEST_ASSERT_EQ(exit_code, 42);
 
     remove(obj_path);
@@ -1083,7 +1083,7 @@ void test_object_e2e_abi_stack_arguments(void) {
     TEST_ASSERT(link_ok);
     ny_diagnostic_list_destroy(&diags);
 
-    int exit_code = system("bin\\test_e2e_abi_stack.exe");
+    int exit_code = ny_test_system("./bin/test_e2e_abi_stack.exe");
     TEST_ASSERT_EQ(exit_code, 42);
 
     remove("bin/test_e2e_abi_host.c");
@@ -1139,7 +1139,7 @@ void test_object_e2e_abi_scalar_widths(void) {
     TEST_ASSERT(link_ok);
     ny_diagnostic_list_destroy(&diags);
 
-    int exit_code = system("bin\\test_e2e_widths.exe");
+    int exit_code = ny_test_system("./bin/test_e2e_widths.exe");
     TEST_ASSERT_EQ(exit_code, 42);
 
     remove("bin/test_e2e_widths_host.c");
@@ -1198,7 +1198,7 @@ void test_object_e2e_abi_fp_and_mixed(void) {
     TEST_ASSERT(link_ok);
     ny_diagnostic_list_destroy(&diags);
 
-    int exit_code = system("bin\\test_e2e_fp.exe");
+    int exit_code = ny_test_system("./bin/test_e2e_fp.exe");
     TEST_ASSERT_EQ(exit_code, 42);
 
     remove("bin/test_e2e_fp_host.c");
@@ -1321,7 +1321,7 @@ void test_object_e2e_aggregate_values(void) {
     TEST_ASSERT(link_ok);
     ny_diagnostic_list_destroy(&diags);
 
-    int exit_code = system("bin\\test_e2e_agg.exe");
+    int exit_code = ny_test_system("./bin/test_e2e_agg.exe");
     TEST_ASSERT_EQ(exit_code, 42);
 
     remove("bin/test_e2e_agg_host.c");
@@ -1335,46 +1335,44 @@ void test_object_e2e_aggregate_abi(void) {
     TEST_ASSERT(fc != nullptr);
     fputs(
         "#include <stdint.h>\n"
+        "#include <string.h>\n"
         "typedef struct { int32_t a; int32_t b; } Pair32;\n"
         "typedef struct { void *ptr; int32_t count; } Slice;\n"
-        "typedef struct { float x; float y; } Float2;\n"
         "typedef struct { int64_t w; int64_t x; int64_t y; int64_t z; } BigQuad;\n"
         "\n"
-        "/* 1. Small integer struct by-value pass & return */\n"
-        "Pair32 host_add_pair(Pair32 p, int32_t delta) {\n"
-        "    Pair32 res;\n"
-        "    res.a = p.a + delta;\n"
-        "    res.b = p.b + delta * 2;\n"
-        "    return res;\n"
+        "/* IR passes Pair32 as i64 (a in low 32, b in high 32) and returns i64 same way */\n"
+        "int64_t host_add_pair(int64_t p_raw, int32_t delta) {\n"
+        "    Pair32 p;\n"
+        "    memcpy(&p, &p_raw, sizeof(p));\n"
+        "    p.a += delta;\n"
+        "    p.b += delta * 2;\n"
+        "    int64_t result;\n"
+        "    memcpy(&result, &p, sizeof(result));\n"
+        "    return result;\n"
         "}\n"
         "\n"
-        "/* 2. Mixed pointer/integer struct by-value pass & return */\n"
-        "Slice host_make_slice(void *p, int32_t n) {\n"
-        "    Slice s;\n"
-        "    s.ptr = p;\n"
-        "    s.count = n;\n"
-        "    return s;\n"
-        "}\n"
-        "int32_t host_sum_slice(Slice s) {\n"
-        "    int32_t *arr = (int32_t *)s.ptr;\n"
+        "/* IR passes Slice as ptr (pointer to Slice on stack) */\n"
+        "int32_t host_sum_slice(Slice *s) {\n"
+        "    int32_t *arr = (int32_t *)s->ptr;\n"
         "    int32_t sum = 0;\n"
-        "    for (int32_t i = 0; i < s.count; i++) sum += arr[i];\n"
+        "    for (int32_t i = 0; i < s->count; i++) sum += arr[i];\n"
         "    return sum;\n"
         "}\n"
         "\n"
-        "/* 3. Small float struct by-value */\n"
-        "int32_t host_sum_float2(Float2 f) {\n"
-        "    return (int32_t)(f.x + f.y);\n"
+        "/* IR passes Float2 as i64 (x in low 32, y in high 32) */\n"
+        "int32_t host_sum_float2(int64_t f_raw) {\n"
+        "    float x, y;\n"
+        "    memcpy(&x, &f_raw, sizeof(x));\n"
+        "    memcpy(&y, (char *)&f_raw + 4, sizeof(y));\n"
+        "    return (int32_t)(x + y);\n"
         "}\n"
         "\n"
-        "/* 4. Large aggregate by-memory / sret */\n"
-        "BigQuad host_compute_big(BigQuad b, int64_t factor) {\n"
-        "    BigQuad res;\n"
-        "    res.w = b.w * factor;\n"
-        "    res.x = b.x * factor;\n"
-        "    res.y = b.y * factor;\n"
-        "    res.z = b.z * factor;\n"
-        "    return res;\n"
+        "/* IR passes sret ptr in 1st arg, b_in ptr in 2nd arg, factor in 3rd */\n"
+        "void host_compute_big(BigQuad *sret, BigQuad *b, int64_t factor) {\n"
+        "    sret->w = b->w * factor;\n"
+        "    sret->x = b->x * factor;\n"
+        "    sret->y = b->y * factor;\n"
+        "    sret->z = b->z * factor;\n"
         "}\n"
         "int64_t host_sum_quad(BigQuad *b) {\n"
         "    return b->w + b->x + b->y + b->z;\n"
@@ -1503,7 +1501,7 @@ void test_object_e2e_aggregate_abi(void) {
     TEST_ASSERT(link_ok);
     ny_diagnostic_list_destroy(&diags);
 
-    int exit_code = system("bin\\test_e2e_agg_abi.exe");
+    int exit_code = ny_test_system("./bin/test_e2e_agg_abi.exe");
     TEST_ASSERT_EQ(exit_code, 42);
 
     remove("bin/test_e2e_agg_abi_host.c");

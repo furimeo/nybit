@@ -1,16 +1,49 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #ifndef NY_TEST_FRAMEWORK_H
 #define NY_TEST_FRAMEWORK_H
+
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#endif
 #include <nybit/support.h>
 
 extern int g_tests_run;
 extern int g_tests_failed;
+
+#if defined(_WIN32)
+#define NYBIT_CLI_BIN "bin\\nybit.exe"
+static inline int ny_test_system(const char *cmd) {
+    if (cmd && cmd[0] == '.' && cmd[1] == '/') {
+        char win_cmd[1024];
+        snprintf(win_cmd, sizeof(win_cmd), "%s", cmd + 2);
+        for (char *p = win_cmd; *p; p++) {
+            if (*p == '/') *p = '\\';
+        }
+        return system(win_cmd);
+    }
+    return system(cmd);
+}
+#else
+#define NYBIT_CLI_BIN "./bin/nybit"
+static inline int ny_test_system(const char *cmd) {
+    int rc = system(cmd);
+    if (rc == -1) return -1;
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return rc;
+}
+#endif
 
 #define TEST_ASSERT(cond) do { \
     if (!(cond)) { \

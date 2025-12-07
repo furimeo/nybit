@@ -117,7 +117,9 @@ void test_aarch64_cli_link_executable(void) {
     fwrite(src, 1, strlen(src), f);
     fclose(f);
 
-    int cli_ret = system("bin\\nybit.exe --target aarch64 --emit-obj -o bin/test_aarch64_cli.o bin/test_aarch64_cli.ny");
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "%s --target aarch64 --emit-obj -o bin/test_aarch64_cli.o bin/test_aarch64_cli.ny", NYBIT_CLI_BIN);
+    int cli_ret = ny_test_system(cmd);
     TEST_ASSERT_EQ(cli_ret, 0);
 
     uint8_t *obj_data;
@@ -135,7 +137,8 @@ void test_aarch64_cli_link_executable(void) {
     uint16_t e_machine = (uint16_t)(obj_data[18] | (obj_data[19] << 8));
     TEST_ASSERT_EQ(e_machine, 183);
 
-    int link_ret = system("bin\\nybit.exe link --target=elf64-aarch64 --entry=main bin/test_aarch64_cli.o -o bin/test_aarch64_cli.elf 2>nul");
+    snprintf(cmd, sizeof(cmd), "%s link --target=elf64-aarch64 --entry=main bin/test_aarch64_cli.o -o bin/test_aarch64_cli.elf", NYBIT_CLI_BIN);
+    int link_ret = ny_test_system(cmd);
     TEST_ASSERT_EQ(link_ret, 0);
 
     FILE *felf = fopen("bin/test_aarch64_cli.elf", "rb");
@@ -170,10 +173,13 @@ void test_aarch64_cli_link_shared(void) {
     fwrite(src, 1, strlen(src), f);
     fclose(f);
 
-    int cli_ret = system("bin\\nybit.exe --target aarch64 --emit-obj -o bin/test_aarch64_cli_so.o bin/test_aarch64_cli_so.ny");
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "%s --target aarch64 --emit-obj -o bin/test_aarch64_cli_so.o bin/test_aarch64_cli_so.ny", NYBIT_CLI_BIN);
+    int cli_ret = ny_test_system(cmd);
     TEST_ASSERT_EQ(cli_ret, 0);
 
-    int link_ret = system("bin\\nybit.exe link --target=elf64-aarch64 --shared --soname=libtest.so bin/test_aarch64_cli_so.o -o bin/libtest_aarch64_cli.so 2>nul");
+    snprintf(cmd, sizeof(cmd), "%s link --target=elf64-aarch64 --shared --soname=libtest.so bin/test_aarch64_cli_so.o -o bin/libtest_aarch64_cli.so", NYBIT_CLI_BIN);
+    int link_ret = ny_test_system(cmd);
     TEST_ASSERT_EQ(link_ret, 0);
 
     FILE *fso = fopen("bin/libtest_aarch64_cli.so", "rb");

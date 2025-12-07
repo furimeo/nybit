@@ -50,6 +50,12 @@ static int run_exe_in_dir(const char *dir, const char *exe) {
 #define run_exe_in_dir(dir, exe) chdir(dir), system(exe)
 #endif
 
+#if defined(_WIN32) || defined(_WIN64)
+#define DEVNULL "2>nul"
+#else
+#define DEVNULL "2>/dev/null"
+#endif
+
 static void emit_cli_dummy_coff(Ny_Object_Buffer *obj_buf, const char *fn_name, bool add_reloc, const char *reloc_target) {
     X86_Encoded_Module emod;
     x86_encoded_mod_init(&emod, ny_str("dummy_coff"));
@@ -176,7 +182,9 @@ void test_cli_link_basic_objects(void) {
     write_file("bin/cli_main.obj", obj1.bytes, obj1.count);
     write_file("bin/cli_sub.obj", obj2.bytes, obj2.count);
 
-    int ret = system("bin\\nybit.exe link bin/cli_main.obj bin/cli_sub.obj -o bin/cli_basic.exe");
+    char cmd_179[512];
+    snprintf(cmd_179, sizeof(cmd_179), "%s link --target=pe-x86-64 bin/cli_main.obj bin/cli_sub.obj -o bin/cli_basic.exe", NYBIT_CLI_BIN);
+    int ret = ny_test_system(cmd_179);
     TEST_ASSERT_EQ(ret, 0);
 
     FILE *f = fopen("bin/cli_basic.exe", "rb");
@@ -208,7 +216,9 @@ void test_cli_link_with_archive_lazy_extraction(void) {
     write_file("bin/cli_ar_main.obj", obj_main.bytes, obj_main.count);
     write_file("bin/cli_mymath.lib", ar_buf.bytes, ar_buf.count);
 
-    int ret = system("bin\\nybit.exe link bin/cli_ar_main.obj bin/cli_mymath.lib -o bin/cli_ar.exe");
+    char cmd_211[512];
+    snprintf(cmd_211, sizeof(cmd_211), "%s link --target=pe-x86-64 bin/cli_ar_main.obj bin/cli_mymath.lib -o bin/cli_ar.exe", NYBIT_CLI_BIN);
+    int ret = ny_test_system(cmd_211);
     TEST_ASSERT_EQ(ret, 0);
 
     FILE *f = fopen("bin/cli_ar.exe", "rb");
@@ -243,7 +253,9 @@ void test_cli_link_search_path_and_library(void) {
     write_file("bin/cli_search_main.obj", obj_main.bytes, obj_main.count);
     write_file("bin/test_libdir/mylib.lib", ar_buf.bytes, ar_buf.count);
 
-    int ret = system("bin\\nybit.exe link bin/cli_search_main.obj -Lbin/test_libdir -lmylib -o bin/cli_search.exe");
+    char cmd_246[512];
+    snprintf(cmd_246, sizeof(cmd_246), "%s link --target=pe-x86-64 bin/cli_search_main.obj -Lbin/test_libdir -lmylib -o bin/cli_search.exe", NYBIT_CLI_BIN);
+    int ret = ny_test_system(cmd_246);
     TEST_ASSERT_EQ(ret, 0);
 
     FILE *f = fopen("bin/cli_search.exe", "rb");
@@ -275,7 +287,9 @@ void test_cli_link_options_entry_base_target(void) {
     write_file("bin/cli_elf1.o", obj1.bytes, obj1.count);
     write_file("bin/cli_elf2.o", obj2.bytes, obj2.count);
 
-    int ret = system("bin\\nybit.exe link --target=elf64 --entry=custom_entry --base=0x600000 bin/cli_elf1.o bin/cli_elf2.o -o bin/cli_elf_out");
+    char cmd_278[512];
+    snprintf(cmd_278, sizeof(cmd_278), "%s link --target=elf64 --entry=custom_entry --base=0x600000 bin/cli_elf1.o bin/cli_elf2.o -o bin/cli_elf_out", NYBIT_CLI_BIN);
+    int ret = ny_test_system(cmd_278);
     TEST_ASSERT_EQ(ret, 0);
 
     FILE *f = fopen("bin/cli_elf_out", "rb");
@@ -297,24 +311,25 @@ void test_cli_link_options_entry_base_target(void) {
 }
 
 void test_cli_link_error_handling_and_cleanup(void) {
-    /* 1. Missing input file */
-    int ret1 = system("bin\\nybit.exe link bin/non_existent_file.obj -o bin/cli_fail.exe 2>nul");
+    char cmd_err[512];
+
+    snprintf(cmd_err, sizeof(cmd_err), "%s link bin/non_existent_file.obj -o bin/cli_fail.exe %s", NYBIT_CLI_BIN, DEVNULL);
+    int ret1 = ny_test_system(cmd_err);
     TEST_ASSERT(ret1 != 0);
     TEST_ASSERT(!file_exists("bin/cli_fail.exe"));
 
-    /* 2. Undefined symbol */
     Ny_Object_Buffer obj_undef;
     ny_obj_buf_init(&obj_undef);
     emit_cli_dummy_coff(&obj_undef, "main", true, "missing_symbol");
     write_file("bin/cli_undef.obj", obj_undef.bytes, obj_undef.count);
 
-    int ret2 = system("bin\\nybit.exe link bin/cli_undef.obj -o bin/cli_fail.exe 2>nul");
+    snprintf(cmd_err, sizeof(cmd_err), "%s link bin/cli_undef.obj -o bin/cli_fail.exe %s", NYBIT_CLI_BIN, DEVNULL);
+    int ret2 = ny_test_system(cmd_err);
     TEST_ASSERT(ret2 != 0);
     TEST_ASSERT(!file_exists("bin/cli_fail.exe"));
     remove("bin/cli_undef.obj");
     ny_obj_buf_destroy(&obj_undef);
 
-    /* 3. Duplicate symbol */
     Ny_Object_Buffer obj_d1, obj_d2;
     ny_obj_buf_init(&obj_d1);
     ny_obj_buf_init(&obj_d2);
@@ -323,7 +338,8 @@ void test_cli_link_error_handling_and_cleanup(void) {
     write_file("bin/cli_d1.obj", obj_d1.bytes, obj_d1.count);
     write_file("bin/cli_d2.obj", obj_d2.bytes, obj_d2.count);
 
-    int ret3 = system("bin\\nybit.exe link bin/cli_d1.obj bin/cli_d2.obj -o bin/cli_fail.exe 2>nul");
+    snprintf(cmd_err, sizeof(cmd_err), "%s link bin/cli_d1.obj bin/cli_d2.obj -o bin/cli_fail.exe %s", NYBIT_CLI_BIN, DEVNULL);
+    int ret3 = ny_test_system(cmd_err);
     TEST_ASSERT(ret3 != 0);
     TEST_ASSERT(!file_exists("bin/cli_fail.exe"));
     remove("bin/cli_d2.obj");
@@ -331,12 +347,12 @@ void test_cli_link_error_handling_and_cleanup(void) {
     ny_obj_buf_destroy(&obj_d2);
     ny_obj_buf_destroy(&obj_d1);
 
-    /* 4. Unsupported target */
-    int ret4 = system("bin\\nybit.exe link --target=mips bin/cli_undef.obj -o bin/cli_fail.exe 2>nul");
+    snprintf(cmd_err, sizeof(cmd_err), "%s link --target=mips bin/cli_undef.obj -o bin/cli_fail.exe %s", NYBIT_CLI_BIN, DEVNULL);
+    int ret4 = ny_test_system(cmd_err);
     TEST_ASSERT(ret4 != 0);
 
-    /* 5. Invalid option */
-    int ret5 = system("bin\\nybit.exe link --bogus-opt 2>nul");
+    snprintf(cmd_err, sizeof(cmd_err), "%s link --bogus-opt %s", NYBIT_CLI_BIN, DEVNULL);
+    int ret5 = ny_test_system(cmd_err);
     TEST_ASSERT(ret5 != 0);
 }
 
@@ -351,10 +367,13 @@ void test_cli_link_determinism(void) {
     write_file("bin/cli_det1.obj", obj1.bytes, obj1.count);
     write_file("bin/cli_det2.obj", obj2.bytes, obj2.count);
 
-    int ret1 = system("bin\\nybit.exe link bin/cli_det1.obj bin/cli_det2.obj -o bin/cli_det_out1.exe");
+    char cmd_det[512];
+    snprintf(cmd_det, sizeof(cmd_det), "%s link --target=pe-x86-64 bin/cli_det1.obj bin/cli_det2.obj -o bin/cli_det_out1.exe", NYBIT_CLI_BIN);
+    int ret1 = ny_test_system(cmd_det);
     TEST_ASSERT_EQ(ret1, 0);
 
-    int ret2 = system("bin\\nybit.exe link bin/cli_det1.obj bin/cli_det2.obj -o bin/cli_det_out2.exe");
+    snprintf(cmd_det, sizeof(cmd_det), "%s link --target=pe-x86-64 bin/cli_det1.obj bin/cli_det2.obj -o bin/cli_det_out2.exe", NYBIT_CLI_BIN);
+    int ret2 = ny_test_system(cmd_det);
     TEST_ASSERT_EQ(ret2, 0);
 
     FILE *f1 = fopen("bin/cli_det_out1.exe", "rb");
@@ -483,7 +502,9 @@ void test_cli_link_shared_options(void) {
     write_file("bin/cli_so_input.o", obj1.bytes, obj1.count);
 
     /* 1. Successful shared object emission via CLI */
-    int ret = system("bin\\nybit.exe link --target=elf64 --shared bin/cli_so_input.o --soname=libfoo.so.1 --needed=libc.so.6 -o bin/libcli_foo.so");
+    char cmd_so[512];
+    snprintf(cmd_so, sizeof(cmd_so), "%s link --target=elf64 --shared bin/cli_so_input.o --soname=libfoo.so.1 --needed=libc.so.6 -o bin/libcli_foo.so", NYBIT_CLI_BIN);
+    int ret = ny_test_system(cmd_so);
     TEST_ASSERT_EQ(ret, 0);
 
     FILE *f = fopen("bin/libcli_foo.so", "rb");
@@ -509,7 +530,8 @@ void test_cli_link_shared_options(void) {
     emit_cli_dummy_coff(&coff_obj, "so_func", false, nullptr);
     write_file("bin/cli_pe_so_input.obj", coff_obj.bytes, coff_obj.count);
 
-    int ret_pe = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/cli_pe_so_input.obj --export=so_func -o bin/foo.dll");
+    snprintf(cmd_so, sizeof(cmd_so), "%s link --target=pe-x86-64 --shared bin/cli_pe_so_input.obj --export=so_func -o bin/foo.dll", NYBIT_CLI_BIN);
+    int ret_pe = ny_test_system(cmd_so);
     TEST_ASSERT_EQ(ret_pe, 0);
 
     FILE *f_dll = fopen("bin/foo.dll", "rb");
@@ -540,12 +562,13 @@ void test_cli_link_pie_options(void) {
     write_file("bin/cli_pie_main.o", obj1.bytes, obj1.count);
     write_file("bin/cli_pie_lib.o", obj2.bytes, obj2.count);
 
-    /* 1. Build shared library libpie_math.so */
-    int ret_so = system("bin\\nybit.exe link --target=elf64 --shared bin/cli_pie_lib.o --soname=libpie_math.so -o bin/libpie_math.so");
+    char cmd_pie[512];
+    snprintf(cmd_pie, sizeof(cmd_pie), "%s link --target=elf64 --shared bin/cli_pie_lib.o --soname=libpie_math.so -o bin/libpie_math.so", NYBIT_CLI_BIN);
+    int ret_so = ny_test_system(cmd_pie);
     TEST_ASSERT_EQ(ret_so, 0);
 
-    /* 2. Build PIE executable referencing libpie_math.so via -L, -l, --rpath, and --pie */
-    int ret_pie = system("bin\\nybit.exe link --target=elf64 --pie bin/cli_pie_main.o -Lbin -lpie_math --rpath=$ORIGIN --entry=pie_entry -o bin/cli_pie_app");
+    snprintf(cmd_pie, sizeof(cmd_pie), "%s link --target=elf64 --pie bin/cli_pie_main.o -Lbin -lpie_math --rpath=\\$ORIGIN --entry=pie_entry -o bin/cli_pie_app", NYBIT_CLI_BIN);
+    int ret_pie = ny_test_system(cmd_pie);
     TEST_ASSERT_EQ(ret_pie, 0);
 
     FILE *f = fopen("bin/cli_pie_app", "rb");
@@ -565,7 +588,8 @@ void test_cli_link_pie_options(void) {
     fclose(f);
 
     /* 3. Rejection of --pie on PE target */
-    int ret_pe = system("bin\\nybit.exe link --target=pe-x86-64 --pie bin/cli_pie_main.o -o bin/pie.exe 2>NUL");
+    snprintf(cmd_pie, sizeof(cmd_pie), "%s link --target=pe-x86-64 --pie bin/cli_pie_main.o -o bin/pie.exe %s", NYBIT_CLI_BIN, DEVNULL);
+    int ret_pe = ny_test_system(cmd_pie);
     TEST_ASSERT(ret_pe != 0);
 
     remove("bin/cli_pie_app");
@@ -647,7 +671,7 @@ void test_cli_link_pe_data_e2e(void) {
     int ret_link_dll = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/pe_data_e2e/dval.obj --export=value -o bin/pe_data_e2e/dval.dll");
     TEST_ASSERT_EQ(ret_link_dll, 0);
 
-    const char *main_c = "extern int value;\nint entry(void) { return value; }\n";
+    const char *main_c = "extern __declspec(dllimport) int value;\nint entry(void) { return value; }\n";
     write_file("bin/pe_data_e2e/main.c", (const uint8_t *)main_c, strlen(main_c));
 
     int ret_comp_main = system("tools\\mingw\\bin\\gcc.exe -c bin/pe_data_e2e/main.c -o bin/pe_data_e2e/main.obj");

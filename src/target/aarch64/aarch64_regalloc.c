@@ -213,7 +213,7 @@ bool aarch64_regalloc_run_impl(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_Re
     bool changed = true;
     while (changed) {
         changed = false;
-        for (ssize_t b = (ssize_t)b_count - 1; b >= 0; b--) {
+        for (ptrdiff_t b = (ptrdiff_t)b_count - 1; b >= 0; b--) {
             Ny_Machine_Block *blk = &fn->blocks[b];
             for (size_t s = 0; s < blk->succ_count; s++) {
                 Ny_Block_ID succ = blk->succs[s];
@@ -256,7 +256,7 @@ bool aarch64_regalloc_run_impl(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_Re
     for (size_t c = 0; c < call_count; c++) {
         uint32_t call_idx = call_sites[c];
         for (size_t v = 0; v < v_count; v++) {
-            if (intervals[v].start_idx <= call_idx && intervals[v].end_idx >= call_idx) {
+            if (intervals[v].start_idx < call_idx && intervals[v].end_idx > call_idx) {
                 intervals[v].crosses_call = true;
             }
         }
@@ -339,7 +339,7 @@ bool aarch64_regalloc_run_impl(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_Re
                     }
                 }
             }
-            if (chosen_reg == AARCH64_NO_REG) {
+            if (chosen_reg == AARCH64_NO_REG && !cur->crosses_call) {
                 for (size_t c = 0; c < fp_caller_saved_count; c++) {
                     if (is_reg_available(free_mask, fp_caller_saved[c])) {
                         chosen_reg = fp_caller_saved[c];
@@ -352,14 +352,6 @@ bool aarch64_regalloc_run_impl(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_Re
                 if (is_reg_available(free_mask, callee_saved[c])) {
                     chosen_reg = callee_saved[c];
                     break;
-                }
-            }
-            if (chosen_reg == AARCH64_NO_REG) {
-                for (size_t c = 0; c < caller_saved_count; c++) {
-                    if (is_reg_available(free_mask, caller_saved[c])) {
-                        chosen_reg = caller_saved[c];
-                        break;
-                    }
                 }
             }
         } else {
@@ -396,9 +388,12 @@ bool aarch64_regalloc_run_impl(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_Re
             active_count++;
         } else {
             size_t victim_idx = SIZE_MAX;
-            for (ssize_t a = (ssize_t)active_count - 1; a >= 0; a--) {
+            for (ptrdiff_t a = (ptrdiff_t)active_count - 1; a >= 0; a--) {
                 bool victim_is_fp = (active[a]->reg_class == NY_REG_CLASS_FP32 || active[a]->reg_class == NY_REG_CLASS_FP64);
                 if (victim_is_fp == is_fp && active[a]->end_idx > cur->end_idx) {
+                    if (cur->crosses_call && !aarch64_abi_is_callee_saved(abi, (AArch64_Phys_Reg)active[a]->assigned_phys)) {
+                        continue;
+                    }
                     victim_idx = (size_t)a;
                     break;
                 }

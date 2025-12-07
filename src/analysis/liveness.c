@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include <nybit/analysis.h>
 #include <nybit/ir.h>
@@ -90,7 +90,7 @@ void ny_liveness_init(Ny_Liveness_Info *liv, const Ny_Function *fn) {
     bool changed = true;
     while (changed) {
         changed = false;
-        for (ssize_t b = (ssize_t)b_count - 1; b >= 0; b--) {
+        for (ptrdiff_t b = (ptrdiff_t)b_count - 1; b >= 0; b--) {
             Ny_Block_ID b_id = (Ny_Block_ID)b;
             const Ny_Block *blk = ny_function_get_block(fn, b_id);
             if (blk == nullptr) continue;

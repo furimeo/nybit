@@ -578,7 +578,7 @@ void test_linux_runtime_pie_structure(void) {
              "./bin/nybit link --target=elf64 --shared --soname=libfoo.so bin/rt_pie/foo.o -o bin/rt_pie/libfoo.so");
     TEST_ASSERT_EQ(system(link_cmd), 0);
     snprintf(link_cmd, sizeof(link_cmd),
-             "./bin/nybit link --target=elf64 --pie --dynamic-linker=%s --rpath=$ORIGIN --entry=_start -Lbin/rt_pie -lfoo bin/rt_pie/main.o -o bin/rt_pie/app",
+             "./bin/nybit link --target=elf64 --pie --dynamic-linker=%s --rpath=\\$ORIGIN --entry=_start -Lbin/rt_pie -lfoo bin/rt_pie/main.o -o bin/rt_pie/app",
              g_rt_interp);
     TEST_ASSERT_EQ(system(link_cmd), 0);
 #endif
@@ -713,7 +713,7 @@ void test_linux_runtime_e2e_function_import(void) {
              "./bin/nybit link --target=elf64 --shared --soname=libfoo.so bin/rt_e2e/foo.o -o bin/rt_e2e/libfoo.so");
     TEST_ASSERT_EQ(system(link_cmd), 0);
     snprintf(link_cmd, sizeof(link_cmd),
-             "./bin/nybit link --target=elf64 --pie --dynamic-linker=%s --rpath=$ORIGIN --entry=_start -Lbin/rt_e2e -lfoo bin/rt_e2e/main.o -o bin/rt_e2e/app",
+             "./bin/nybit link --target=elf64 --pie --dynamic-linker=%s --rpath=\\$ORIGIN --entry=_start -Lbin/rt_e2e -lfoo bin/rt_e2e/main.o -o bin/rt_e2e/app",
              g_rt_interp);
     TEST_ASSERT_EQ(system(link_cmd), 0);
 #endif
@@ -777,7 +777,7 @@ void test_linux_runtime_e2e_data_import(void) {
              "./bin/nybit link --target=elf64 --shared --soname=libdata.so bin/rt_data/data.o -o bin/rt_data/libdata.so");
     TEST_ASSERT_EQ(system(link_cmd), 0);
     snprintf(link_cmd, sizeof(link_cmd),
-             "./bin/nybit link --target=elf64 --pie --dynamic-linker=%s --rpath=$ORIGIN --entry=_start -Lbin/rt_data -ldata bin/rt_data/main.o -o bin/rt_data/app",
+             "./bin/nybit link --target=elf64 --pie --dynamic-linker=%s --rpath=\\$ORIGIN --entry=_start -Lbin/rt_data -ldata bin/rt_data/main.o -o bin/rt_data/app",
              g_rt_interp);
     TEST_ASSERT_EQ(system(link_cmd), 0);
 #endif

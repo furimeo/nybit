@@ -173,7 +173,7 @@ void x86_emit_epilogue(X86_Block *blk, const X86_Stack_Frame *frame) {
         x86_block_append_inst(blk, mov_rsp_rbp);
     }
 
-    for (ssize_t r = (ssize_t)X86_GPR_COUNT - 1; r >= 0; r--) {
+    for (ptrdiff_t r = (ptrdiff_t)X86_GPR_COUNT - 1; r >= 0; r--) {
         if (frame->callee_saved_mask & (1 << r)) {
             X86_Instruction pop_cs = {
                 .opcode = X86_OPC_POP,

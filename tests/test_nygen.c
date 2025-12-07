@@ -139,7 +139,7 @@ void test_nygen_compile_executable(void) {
     TEST_ASSERT(res.success);
     nygen_result_destroy(&res);
 
-    int exit_code = system("bin\\test_nygen_direct.exe");
+    int exit_code = ny_test_system("./bin/test_nygen_direct.exe");
     TEST_ASSERT_EQ(exit_code, 42);
 
     remove("bin/test_nygen_direct.exe");
@@ -151,10 +151,12 @@ void test_nygen_cli_integration_e2e(void) {
     fwrite(s_simple_ny, 1, strlen(s_simple_ny), f);
     fclose(f);
 
-    int cli_ret = system("bin\\nybit.exe bin/test_cli_tmp.ny -o bin/test_cli_out.exe");
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "%s bin/test_cli_tmp.ny -o bin/test_cli_out.exe", NYBIT_CLI_BIN);
+    int cli_ret = ny_test_system(cmd);
     TEST_ASSERT_EQ(cli_ret, 0);
 
-    int run_ret = system("bin\\test_cli_out.exe");
+    int run_ret = ny_test_system("./bin/test_cli_out.exe");
     TEST_ASSERT_EQ(run_ret, 42);
 
     remove("bin/test_cli_tmp.ny");

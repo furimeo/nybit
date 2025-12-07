@@ -2,7 +2,8 @@ param(
     [string]$Compiler = "$PSScriptRoot\tools\mingw\bin\gcc.exe",
     [switch]$RunTests,
     [switch]$RunMain,
-    [switch]$RunBench
+    [switch]$RunBench,
+    [switch]$Package
 )
 # SPDX-License-Identifier: MPL-2.0
 # Copyright (c) 2026 Le Hung Quang Minh (furimeo)
@@ -100,4 +101,20 @@ if ($RunBench) {
 
 if ($RunMain) {
     & "bin/nybit.exe"
+}
+
+if ($Package) {
+    $pkgName = "nybit-windows-x86_64"
+    $distDir = "dist/$pkgName"
+    if (Test-Path $distDir) { Remove-Item -Recurse -Force $distDir }
+    if (Test-Path "dist/$pkgName.zip") { Remove-Item -Force "dist/$pkgName.zip" }
+    New-Item -ItemType Directory -Force -Path "$distDir/bin" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$distDir/lib" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$distDir/include" | Out-Null
+    Copy-Item "bin/nybit.exe" "$distDir/bin/"
+    Get-ChildItem "bin/*.a" | Copy-Item -Destination "$distDir/lib/"
+    Get-ChildItem "bin/*.lib" | Copy-Item -Destination "$distDir/lib/"
+    Copy-Item -Recurse "include/*" "$distDir/include/"
+    Copy-Item "LICENSE" "$distDir/"
+    Compress-Archive -Path "$distDir/*" -DestinationPath "dist/$pkgName.zip"
 }

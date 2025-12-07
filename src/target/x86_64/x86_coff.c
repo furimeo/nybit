@@ -192,7 +192,8 @@ bool ny_emit_coff_x86_64(Ny_Object_Buffer *out_buf, const X86_Encoded_Module *em
                     break;
                 }
             } else {
-                size_t slen = strnlen((const char *)syms[s].N.ShortName, 8);
+                size_t slen = 0;
+                while (slen < 8 && syms[s].N.ShortName[slen] != '\0') slen++;
                 if (ny_str_eq(reloc->symbol_name, (Ny_String){.data = (const char *)syms[s].N.ShortName, .len = slen})) {
                     sym_idx = (uint32_t)s;
                     break;
