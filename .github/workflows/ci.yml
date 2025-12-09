@@ -71,25 +71,70 @@ jobs:
         run: |
           ./build.sh --run-tests
 
-  packaging:
+  package-linux-x86_64:
     runs-on: ubuntu-latest
-    needs: [linux-x86_64, linux-arm64, windows-x86_64]
+    needs: [linux-x86_64]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Package Artifacts
+      - name: Install Compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc
+
+      - name: Build Package
         run: |
           chmod +x build.sh
-          ./build.sh
-          mkdir -p dist/nybit-linux-x86_64/bin dist/nybit-linux-x86_64/lib dist/nybit-linux-x86_64/include
-          cp bin/nybit dist/nybit-linux-x86_64/bin/
-          cp bin/*.a dist/nybit-linux-x86_64/lib/
-          cp -r include/* dist/nybit-linux-x86_64/include/
-          cp LICENSE dist/nybit-linux-x86_64/
-          tar -czf nybit-linux-x86_64.tar.gz -C dist nybit-linux-x86_64
+          ./build.sh --package
 
-      - name: Upload Release Archive
+      - name: Upload Package
         uses: actions/upload-artifact@v4
         with:
           name: nybit-linux-x86_64
-          path: nybit-linux-x86_64.tar.gz
+          path: dist/nybit-linux-x86_64.tar.gz
+
+  package-linux-aarch64:
+    runs-on: ubuntu-24.04-arm
+    needs: [linux-arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc
+
+      - name: Build Package
+        run: |
+          chmod +x build.sh
+          ./build.sh --package
+
+      - name: Upload Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nybit-linux-aarch64
+          path: dist/nybit-linux-aarch64.tar.gz
+
+  package-windows-x86_64:
+    runs-on: windows-latest
+    needs: [windows-x86_64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSYS2 MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Build Package
+        shell: pwsh
+        run: |
+          .\build.ps1 -Package
+
+      - name: Upload Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nybit-windows-x86_64
+          path: dist/nybit-windows-x86_64.zip

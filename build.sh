@@ -4,7 +4,11 @@
 set -euo pipefail
 
 CC="${CC:-gcc}"
-CFLAGS="${CFLAGS:--std=c23 -Wall -Wextra -Werror -g -Iinclude -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L}"
+STD_FLAG="-std=c23"
+if ! $CC -std=c23 -E -xc /dev/null >/dev/null 2>&1; then
+    STD_FLAG="-std=c2x"
+fi
+CFLAGS="${CFLAGS:-$STD_FLAG -Wall -Wextra -Werror -g -Iinclude -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L}"
 AR="${AR:-ar}"
 BIN_DIR="bin"
 OBJ_DIR="bin/obj"
@@ -109,10 +113,12 @@ if [ "$package" -eq 1 ]; then
     dist_dir="dist/${pkg_name}"
     mkdir -p dist
     rm -rf "${dist_dir}" "dist/${pkg_name}.tar.gz"
-    mkdir -p "${dist_dir}/bin" "${dist_dir}/lib" "${dist_dir}/include"
+    mkdir -p "${dist_dir}/bin" "${dist_dir}/lib" "${dist_dir}/include" "${dist_dir}/docs"
     cp bin/nybit "${dist_dir}/bin/"
     cp bin/*.a "${dist_dir}/lib/"
     cp -r include/* "${dist_dir}/include/"
     cp LICENSE "${dist_dir}/"
+    cp README.md "${dist_dir}/"
+    cp -r docs/* "${dist_dir}/docs/"
     tar -czf "dist/${pkg_name}.tar.gz" -C dist "${pkg_name}"
 fi

@@ -452,7 +452,7 @@ bool aarch64_regalloc_run_impl(Ny_Machine_Function *fn, Ny_Target_ABI abi, Ny_Re
                         bool is_fp = (intervals[v].reg_class == NY_REG_CLASS_FP32 || intervals[v].reg_class == NY_REG_CLASS_FP64);
                         AArch64_Phys_Reg scratch_phys;
                         if (is_fp) {
-                            scratch_phys = AARCH64_V0;
+                            scratch_phys = (fp_spill_idx == 0) ? AARCH64_V0 : AARCH64_V1;
                             fp_spill_idx++;
                         } else {
                             scratch_phys = (gpr_spill_idx == 0) ? AARCH64_X9 : AARCH64_X10;

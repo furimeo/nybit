@@ -145,7 +145,10 @@ static int do_cli_link(int argc, char **argv) {
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
-        if (strcmp(arg, "-o") == 0 && i + 1 < argc) {
+        if (strcmp(arg, "--version") == 0 || strcmp(arg, "-v") == 0) {
+            printf("nybit %s\n", NYBIT_VERSION_STRING);
+            return 0;
+        } else if (strcmp(arg, "-o") == 0 && i + 1 < argc) {
             output_file = argv[++i];
         } else if (strncmp(arg, "-o", 2) == 0 && arg[2] != '\0') {
             output_file = arg + 2;
@@ -623,7 +626,10 @@ int main(int argc, char **argv) {
     bool from_nyir = false;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-O0") == 0 || strcmp(argv[i], "--no-opt") == 0) {
+        if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
+            printf("nybit %s\n", NYBIT_VERSION_STRING);
+            return 0;
+        } else if (strcmp(argv[i], "-O0") == 0 || strcmp(argv[i], "--no-opt") == 0) {
             config.opt_level = NYGEN_OPT_O0;
         } else if (strcmp(argv[i], "-O1") == 0) {
             config.opt_level = NYGEN_OPT_O1;

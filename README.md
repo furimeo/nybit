@@ -18,17 +18,24 @@ The toolchain is divided into three core subsystems:
   - Transitive lazy member extraction from Unix `.a` archives and Windows `.lib` static libraries.
   - Bit-for-bit deterministic binary emission.
 
-## Target Architectures
+## Target Support Matrix
 
-- **x86-64**:
-  - System V AMD64 ABI (Linux)
-  - Microsoft x64 ABI (Windows)
-  - Full support for 64-bit integer, floating point, stack arguments, callee-saved registers, and frame unwinding.
-- **AArch64**:
-  - AAPCS64 standard ABI (Linux ELF)
-  - Homogeneous Floating-point Aggregates (HFA) and small struct register packing
-  - DWARF CFI/FDE unwind table generation
-  - Runtime validation via native ARM64 or QEMU user-mode runner
+| Target Architecture | Target Format | Status | Runtime Validation |
+| :--- | :--- | :--- | :--- |
+| **x86-64 Linux** | ELF64 Static / PIE / Dynamic (`.so`) | Supported | Native Linux / WSL |
+| **x86-64 Windows** | PE32+ (AMD64) EXE / DLL | Supported | Native Windows Win32 |
+| **AArch64 Linux** | ELF64 Static / PIE / Dynamic (`.so`) | Supported | Native ARM64 runner / QEMU user-mode |
+| **AArch64 Windows** | PE/COFF AMD64 | Unsupported | N/A |
+
+### ABI & Architecture Highlights
+- **x86-64**: System V AMD64 and Microsoft x64 calling conventions with complete stack alignment, register spills, floating point arguments, and callee-saved restoration.
+- **AAPCS64 Aggregate ABI**: Complete standard aggregate classification (`aarch64_abi_classify_aggregate`) supporting:
+  - Small composites (<= 16 bytes) packed into 1-2 General Purpose Registers (GPRs).
+  - Homogeneous Floating-point Aggregates (HFA) of up to 4 uniform float/double members passed in V0-V3.
+  - Large aggregates (> 16 bytes or > 4 float members) passed via indirect pointer / sret buffer (X8 register).
+  - Mixed scalar, aggregate, and stack outgoing arguments under high register pressure.
+- **Unwind & Debug Foundation**: DWARF CIE/FDE unwind table emission (`.eh_frame`) and line/type tables (`.debug_line`, `.debug_info`, `.debug_abbrev`) on ELF; CodeView debug tables on Windows COFF.
+- **In-Memory JIT**: Instruction cache flushing (`__builtin___clear_cache` / `FlushInstructionCache`), page protection transitions (`rwx`), and BL/ADRP relocation fixups across both x86-64 and AArch64.
 
 ## Building & Testing
 
@@ -66,11 +73,12 @@ cmake --build build
 ctest --test-dir build
 ```
 
-## Quality Assurance
+## Quality Assurance & Non-Goals
 
-- **Zero Memory Leaks**: Monitored via internal memory tracking wrapper across every test case and pass pipeline.
-- **Deterministic Emission**: All object, executable, and shared library outputs are verified byte-for-byte identical across runs.
-- **Continuous Integration**: GitHub Actions testing matrix covering Linux x86-64 (native & QEMU AArch64), Linux ARM64 (native runner), and Windows x86-64.
+- **Zero Memory Leaks**: Monitored via internal memory tracking wrapper (`ny_alloc`, `ny_free`) across every test case and pass pipeline. Leak checks are strictly verified on all platforms.
+- **Deterministic Emission**: All object, executable, and shared library outputs are verified byte-for-byte identical across repeated runs.
+- **Continuous Integration**: GitHub Actions testing matrix covering Linux x86-64 (native runner & QEMU fallback), Linux ARM64 (native runner `ubuntu-24.04-arm`), Windows x86-64 (MSYS2 UCRT64), and automated release packaging.
+- **Known Limitations & Core V1 Freeze**: Advanced dynamic linking features (such as GNU hash, RELR packed relocations, thread-local storage / TLS, IFUNC, symbol versioning, lazy binding, copy relocations, linker scripts, and LTO) are explicit non-goals for Core V1.
 
 ## License
 

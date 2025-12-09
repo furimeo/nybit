@@ -111,10 +111,12 @@ if ($Package) {
     New-Item -ItemType Directory -Force -Path "$distDir/bin" | Out-Null
     New-Item -ItemType Directory -Force -Path "$distDir/lib" | Out-Null
     New-Item -ItemType Directory -Force -Path "$distDir/include" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$distDir/docs" | Out-Null
     Copy-Item "bin/nybit.exe" "$distDir/bin/"
-    Get-ChildItem "bin/*.a" | Copy-Item -Destination "$distDir/lib/"
     Get-ChildItem "bin/*.lib" | Copy-Item -Destination "$distDir/lib/"
     Copy-Item -Recurse "include/*" "$distDir/include/"
     Copy-Item "LICENSE" "$distDir/"
+    Copy-Item "README.md" "$distDir/"
+    Copy-Item -Recurse "docs/*" "$distDir/docs/"
     Compress-Archive -Path "$distDir/*" -DestinationPath "dist/$pkgName.zip"
 }

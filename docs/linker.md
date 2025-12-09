@@ -29,11 +29,26 @@ nybit link <inputs...> [-o <output>] [--target=<target>] [-L<dir>] [-l<name>] [-
 - `--entry=<symbol>`: Specify the entry point symbol.
 - `--base=<address>`: Base address for executable image.
 
-## Features
+## Features & Capabilities
 
-- Static executable emission: ELF64 (x86-64, AArch64) and Windows PE32+ (AMD64).
-- Dynamic / shared library emission: ELF64 `.so` with dynamic symbol table, hash tables, and PLT/GOT relocations; Windows PE DLL with export directory and base relocations (`.reloc`).
-- Position-independent executables (PIE) with full ASLR compatibility.
-- Lazy member extraction from static archives with fixpoint transitive dependency resolution.
-- Bit-for-bit deterministic binary emission.
-- Atomic file replacement for safe builds.
+- **Static Executable Emission**:
+  - ELF64 (x86-64 and AArch64) with raw entry-point resolution (`_start` or custom `--entry`).
+  - Windows PE32+ (AMD64) with full Optional Header and section headers (`.text`, `.rdata`, `.data`, `.pdata`).
+- **Dynamic & Shared Library Emission**:
+  - ELF64 `.so` with dynamic symbol table (`.dynsym`), string table (`.dynstr`), hash table (`.hash`), `.dynamic` section, and dynamic relocations (`.rela.dyn`, `.rela.plt`).
+  - Windows PE DLL with Export Directory Table (`.edata`), Export Address Table (EAT), Name Pointer Table, and base relocation fixups (`.reloc`).
+- **Position-Independent Executables (PIE)**:
+  - Full ASLR compatibility on ELF64 platforms with PT_INTERP program header and dynamic linker resolution (`/lib64/ld-linux-x86-64.so.2` on x86-64, `/lib/ld-linux-aarch64.so.1` on AArch64).
+- **Import and Export Resolution**:
+  - ELF: Dynamic symbol resolution with `-l` and `--needed`, `DT_NEEDED`, and `$ORIGIN` runpath support.
+  - Windows PE: Import Directory Table (`.idata`), Import Lookup Table (ILT), Import Address Table (IAT) bound via delay/load thunks.
+- **Relocations**:
+  - x86-64: `R_X86_64_64`, `R_X86_64_PC32`, `R_X86_64_PLT32`, `R_X86_64_GOTPCREL`.
+  - AArch64: `R_AARCH64_ADR_PREL_PG_HI21`, `R_AARCH64_ADD_ABS_LO12_NC`, `R_AARCH64_CALL26`, `R_AARCH64_JUMP26`, `R_AARCH64_LDST64_ABS_LO12_NC`, `R_AARCH64_LDST32_ABS_LO12_NC`.
+  - Windows PE: `IMAGE_REL_AMD64_ADDR64`, `IMAGE_REL_AMD64_REL32`, `IMAGE_REL_BASED_DIR64`.
+- **Static Archive Resolution**:
+  - Lazy member extraction from static archives (`.a` / `.lib`) with fixpoint transitive dependency resolution.
+- **Bit-for-Bit Determinism**:
+  - Deterministic binary emission without timestamps or non-deterministic metadata.
+- **Atomic Output Replacement**:
+  - Outputs are written and swapped safely.

@@ -10,6 +10,11 @@
 #include <string.h>
 #include <assert.h>
 
+#define NYBIT_VERSION_MAJOR 1
+#define NYBIT_VERSION_MINOR 0
+#define NYBIT_VERSION_PATCH 0
+#define NYBIT_VERSION_STRING "1.0.0"
+
 typedef uint32_t Ny_Value_ID;
 typedef uint32_t Ny_Inst_ID;
 typedef uint32_t Ny_Block_ID;
