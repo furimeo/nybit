@@ -5,6 +5,8 @@
 
 int g_tests_run = 0;
 int g_tests_failed = 0;
+int g_tests_skipped = 0;
+bool g_test_skipped = false;
 
 void test_module_lifecycle(void);
 void test_build_add_function(void);
@@ -558,6 +560,6 @@ int main(void) {
         return 1;
     }
 
-    printf("all %d tests passed (0 bytes leaked)\n", g_tests_run);
+    printf("all %d tests passed (%d skipped, 0 bytes leaked)\n", g_tests_run, g_tests_skipped);
     return 0;
 }

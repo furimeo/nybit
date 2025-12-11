@@ -138,6 +138,33 @@ static bool reloc_target_is_writable(Nylink_Context *ctx, const Nylink_Relocatio
     return ctx->sec_layouts[reloc->sec_id].out_sec_idx == 2;
 }
 
+static void write_start_trampoline(Nylink_Context *ctx, uint64_t entry_fn_va) {
+    Nylink_Output_Section *sec = &ctx->out_sections[0];
+    uint8_t *p = sec->data;
+    uint64_t tramp_va = sec->va;
+
+    if (ctx->machine == EM_AARCH64) {
+        int64_t off = (int64_t)(entry_fn_va - tramp_va);
+        uint32_t bl = 0x94000000u | (uint32_t)((off >> 2) & 0x03FFFFFFu);
+        uint32_t mov_x8_93 = 0xD2800BA8u;
+        uint32_t svc0 = 0xD4000001u;
+        uint32_t nop = 0xD503201Fu;
+        memcpy(p + 0, &bl, 4);
+        memcpy(p + 4, &mov_x8_93, 4);
+        memcpy(p + 8, &svc0, 4);
+        memcpy(p + 12, &nop, 4);
+    } else {
+        int64_t off = (int64_t)(entry_fn_va - (tramp_va + 5));
+        p[0] = 0xE8;
+        uint32_t rel32 = (uint32_t)off;
+        memcpy(p + 1, &rel32, 4);
+        p[5] = 0x89; p[6] = 0xC7;
+        p[7] = 0xB8; p[8] = 0x3C; p[9] = 0x00; p[10] = 0x00; p[11] = 0x00;
+        p[12] = 0x0F; p[13] = 0x05;
+        p[14] = 0x90; p[15] = 0x90;
+    }
+}
+
 static void pe_append_to_section(Nylink_Output_Section *sec, const void *data, size_t size) {
     if (size == 0) return;
     size_t needed = (size_t)sec->file_size + size;
@@ -263,9 +290,22 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         ctx->sec_layouts = (Nylink_Input_Sec_Layout *)ny_alloc_zero(ctx->section_count * sizeof(Nylink_Input_Sec_Layout));
     }
 
+    bool need_start_trampoline = false;
+    const size_t trampoline_size = 16;
+    if (cfg && cfg->output_mode == NYLINK_OUTPUT_EXECUTABLE &&
+        cfg->target_format == NYLINK_TARGET_ELF64) {
+        const Nylink_Symbol *start_sym = nylink_find_symbol(ctx, "_start");
+        bool has_explicit_entry = (cfg->entry_point != nullptr &&
+                                  strcmp(cfg->entry_point, "main") != 0);
+        if (!has_explicit_entry &&
+            (!start_sym || !start_sym->is_defined)) {
+            need_start_trampoline = true;
+        }
+    }
+
     for (size_t out_idx = 0; out_idx < 4; out_idx++) {
         Nylink_Output_Section *out_sec = &ctx->out_sections[out_idx];
-        uint64_t current_offset = 0;
+        uint64_t current_offset = (need_start_trampoline && out_idx == 0) ? trampoline_size : 0;
         uint32_t max_align = out_sec->align;
 
         for (size_t in_idx = 0; in_idx < ctx->section_count; in_idx++) {
@@ -982,7 +1022,8 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
 
     uint64_t entry_va = ctx->resolved_symbols[entry_sym->id].final_va;
     const Nylink_Output_Section *sec_text = &ctx->out_sections[0];
-    if (sec_text->mem_size == 0 || entry_va < sec_text->va || entry_va >= (sec_text->va + sec_text->mem_size)) {
+    if (sec_text->mem_size == 0 || entry_va < sec_text->va ||
+        entry_va >= (sec_text->va + sec_text->mem_size)) {
         char msg[256];
         snprintf(msg, sizeof(msg), "entry point '%s' (0x%llx) is outside .text section (0x%llx - 0x%llx)",
                  entry_name, (unsigned long long)entry_va,
@@ -991,7 +1032,12 @@ bool nylink_layout_internal(Nylink_Context *ctx, const Nylink_Config *cfg) {
         return false;
     }
 
-    ctx->entry_point_va = entry_va;
+    if (need_start_trampoline) {
+        write_start_trampoline(ctx, entry_va);
+        ctx->entry_point_va = sec_text->va;
+    } else {
+        ctx->entry_point_va = entry_va;
+    }
     ctx->is_laid_out = true;
     return true;
 }

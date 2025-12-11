@@ -396,8 +396,7 @@ void test_linux_runtime_env_detection(void) {
 
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_env_detection: skipped (no Linux/WSL environment)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     TEST_ASSERT(g_rt_interp[0] == '/');
@@ -412,8 +411,7 @@ void test_linux_runtime_shared_lib_structure(void) {
     rt_detect_env();
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_shared_lib_structure: skipped (no Linux/WSL)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     const char *win_dir = "bin/rt_so";
@@ -545,8 +543,7 @@ void test_linux_runtime_pie_structure(void) {
     rt_detect_env();
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_pie_structure: skipped (no Linux/WSL)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     const char *win_dir = "bin/rt_pie";
@@ -680,8 +677,7 @@ void test_linux_runtime_e2e_function_import(void) {
     rt_detect_env();
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_e2e_function_import: skipped (no Linux/WSL)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     const char *win_dir = "bin/rt_e2e";
@@ -744,8 +740,7 @@ void test_linux_runtime_e2e_data_import(void) {
     rt_detect_env();
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_e2e_data_import: skipped (no Linux/WSL)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     const char *win_dir = "bin/rt_data";
@@ -808,8 +803,7 @@ void test_linux_runtime_dlopen_supplemental(void) {
     rt_detect_env();
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_dlopen_supplemental: skipped (no Linux/WSL)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     const char *win_dir = "bin/rt_dl";
@@ -858,8 +852,7 @@ void test_linux_runtime_negative_missing_so(void) {
     rt_detect_env();
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_negative_missing_so: skipped (no Linux/WSL)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     const char *win_dir = "bin/rt_neg";
@@ -904,8 +897,7 @@ void test_linux_runtime_negative_missing_symbol(void) {
     rt_detect_env();
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_negative_missing_symbol: skipped (no Linux/WSL)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     const char *win_dir = "bin/rt_nosym";
@@ -952,8 +944,7 @@ void test_linux_runtime_negative_bad_interp(void) {
     rt_detect_env();
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_negative_bad_interp: skipped (no Linux/WSL)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     const char *win_dir = "bin/rt_badinterp";
@@ -994,8 +985,7 @@ void test_linux_runtime_pie_aslr(void) {
     rt_detect_env();
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_pie_aslr: skipped (no Linux/WSL)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     const char *win_dir = "bin/rt_aslr";
@@ -1044,8 +1034,7 @@ void test_linux_runtime_determinism(void) {
     rt_detect_env();
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_determinism: skipped (no Linux/WSL)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     const char *win_dir = "bin/rt_det";
@@ -1151,8 +1140,7 @@ void test_linux_runtime_readelf_inspection(void) {
     rt_detect_env();
     if (g_rt_env == RT_ENV_NONE) {
         printf("test_linux_runtime_readelf_inspection: skipped (no Linux/WSL)\n");
-        g_tests_run++;
-        return;
+        TEST_SKIP(0);
     }
 
     const char *win_dir = "bin/rt_insp";

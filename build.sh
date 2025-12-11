@@ -81,7 +81,7 @@ $AR rcs bin/nylink.a "${nylink_objs[@]}"
 cp bin/nylink.a bin/nylink.lib
 
 $CC $CFLAGS src/main.c bin/nylink.a bin/nygen.a -o bin/nybit
-cp -f bin/nybit bin/nybit.exe
+cp -f bin/nybit bin/nybit.exe 2>/dev/null || true
 
 test_sources=()
 while IFS= read -r -d '' f; do

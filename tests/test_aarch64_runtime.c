@@ -241,7 +241,7 @@ void test_aarch64_rt_env_detection(void) {
 void test_aarch64_rt_trivial_return(void) {
     if (!aarch64_rt_available()) {
         printf("test_aarch64_rt_trivial_return: skipped (aarch64 runtime %s)\n", aarch64_rt_desc());
-        return;
+        TEST_SKIP(aarch64_rt_desc());
     }
     TEST_ASSERT(aarch64_rt_link_and_run(s_rt_simple_ny, "rt_trivial.o", "bin/rt_aarch64_trivial.elf", 42));
 }
@@ -249,7 +249,7 @@ void test_aarch64_rt_trivial_return(void) {
 void test_aarch64_rt_arithmetic(void) {
     if (!aarch64_rt_available()) {
         printf("test_aarch64_rt_arithmetic: skipped (aarch64 runtime %s)\n", aarch64_rt_desc());
-        return;
+        TEST_SKIP(aarch64_rt_desc());
     }
     TEST_ASSERT(aarch64_rt_link_and_run(s_rt_arith_ny, "rt_arith.o", "bin/rt_aarch64_arith.elf", 18));
 }
@@ -257,7 +257,7 @@ void test_aarch64_rt_arithmetic(void) {
 void test_aarch64_rt_function_call(void) {
     if (!aarch64_rt_available()) {
         printf("test_aarch64_rt_function_call: skipped (aarch64 runtime %s)\n", aarch64_rt_desc());
-        return;
+        TEST_SKIP(aarch64_rt_desc());
     }
     TEST_ASSERT(aarch64_rt_link_and_run(s_rt_call_ny, "rt_call.o", "bin/rt_aarch64_call.elf", 42));
 }
@@ -265,7 +265,7 @@ void test_aarch64_rt_function_call(void) {
 void test_aarch64_rt_global_data(void) {
     if (!aarch64_rt_available()) {
         printf("test_aarch64_rt_global_data: skipped (aarch64 runtime %s)\n", aarch64_rt_desc());
-        return;
+        TEST_SKIP(aarch64_rt_desc());
     }
     TEST_ASSERT(aarch64_rt_link_and_run(s_rt_global_ny, "rt_global.o", "bin/rt_aarch64_global.elf", 42));
 }
@@ -273,7 +273,7 @@ void test_aarch64_rt_global_data(void) {
 void test_aarch64_rt_aggregate_pair(void) {
     if (!aarch64_rt_available()) {
         printf("test_aarch64_rt_aggregate_pair: skipped (aarch64 runtime %s)\n", aarch64_rt_desc());
-        return;
+        TEST_SKIP(aarch64_rt_desc());
     }
     Nygen_Config cfg;
     nygen_config_init(&cfg);
@@ -288,7 +288,7 @@ void test_aarch64_rt_aggregate_pair(void) {
 void test_aarch64_rt_aggregate_big_sret(void) {
     if (!aarch64_rt_available()) {
         printf("test_aarch64_rt_aggregate_big_sret: skipped (aarch64 runtime %s)\n", aarch64_rt_desc());
-        return;
+        TEST_SKIP(aarch64_rt_desc());
     }
     Nygen_Config cfg;
     nygen_config_init(&cfg);

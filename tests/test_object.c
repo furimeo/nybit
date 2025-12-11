@@ -10,6 +10,12 @@
 #include <string.h>
 #include <stdlib.h>
 
+#if defined(__x86_64__) || defined(_M_X64)
+#define NY_X86_HOST 1
+#else
+#define NY_X86_HOST 0
+#endif
+
 #define ELF_MAGIC_0 0x7F
 #define ELF_MAGIC_1 'E'
 #define ELF_MAGIC_2 'L'
@@ -466,6 +472,7 @@ void test_object_bounds_and_error_validation(void) {
 }
 
 void test_object_readelf_and_objdump_inspection(void) {
+    if (!NY_X86_HOST) { printf("test_object_readelf_and_objdump_inspection: skipped (x86_64 host required)\n"); TEST_SKIP(0); }
     const char *src =
         "@function multi_a(%x: i32) -> i32;\n"
         ".entry;\n"
@@ -698,6 +705,7 @@ static bool compile_source_to_obj(const char *src, const char *out_obj_path, con
 }
 
 void test_object_e2e_link_executable(void) {
+    if (!NY_X86_HOST) { printf("test_object_e2e_link_executable: skipped (x86_64 host required)\n"); TEST_SKIP(0); }
     const char *src =
         "@function nybit_compute() -> i32;\n"
         ".entry;\n"
@@ -734,6 +742,7 @@ void test_object_e2e_link_executable(void) {
 }
 
 void test_object_e2e_internal_calls(void) {
+    if (!NY_X86_HOST) { printf("test_object_e2e_internal_calls: skipped (x86_64 host required)\n"); TEST_SKIP(0); }
     const char *src =
         "@function helper_mul(%x: i32, %y: i32) -> i32;\n"
         ".entry;\n"
@@ -788,6 +797,7 @@ void test_object_e2e_internal_calls(void) {
 }
 
 void test_object_e2e_external_calls(void) {
+    if (!NY_X86_HOST) { printf("test_object_e2e_external_calls: skipped (x86_64 host required)\n"); TEST_SKIP(0); }
     FILE *fc = fopen("bin/test_e2e_host.c", "w");
     TEST_ASSERT(fc != nullptr);
     fputs("int host_mult_add(int a, int b, int c) { return (a * b) + c; }\n", fc);
@@ -829,6 +839,7 @@ void test_object_e2e_external_calls(void) {
 }
 
 void test_object_e2e_linker_diagnostics(void) {
+    if (!NY_X86_HOST) { printf("test_object_e2e_linker_diagnostics: skipped (x86_64 host required)\n"); TEST_SKIP(0); }
     const char *src =
         "@function main() -> i32;\n"
         ".entry;\n"
@@ -978,6 +989,7 @@ void test_object_globals_rodata_data_bss(void) {
 }
 
 void test_object_e2e_globals_execution(void) {
+    if (!NY_X86_HOST) { printf("test_object_e2e_globals_execution: skipped (x86_64 host required)\n"); TEST_SKIP(0); }
     const char *src =
         "@global @readonly @k_base: i32 = 20;\n"
         "@global @g_accum: i32 = 12;\n"
@@ -1024,6 +1036,7 @@ void test_object_e2e_globals_execution(void) {
 }
 
 void test_object_e2e_abi_stack_arguments(void) {
+    if (!NY_X86_HOST) { printf("test_object_e2e_abi_stack_arguments: skipped (x86_64 host required)\n"); TEST_SKIP(0); }
     FILE *fc = fopen("bin/test_e2e_abi_host.c", "w");
     TEST_ASSERT(fc != nullptr);
     fputs(
@@ -1093,6 +1106,7 @@ void test_object_e2e_abi_stack_arguments(void) {
 }
 
 void test_object_e2e_abi_scalar_widths(void) {
+    if (!NY_X86_HOST) { printf("test_object_e2e_abi_scalar_widths: skipped (x86_64 host required)\n"); TEST_SKIP(0); }
     FILE *fc = fopen("bin/test_e2e_widths_host.c", "w");
     TEST_ASSERT(fc != nullptr);
     fputs(
@@ -1149,6 +1163,7 @@ void test_object_e2e_abi_scalar_widths(void) {
 }
 
 void test_object_e2e_abi_fp_and_mixed(void) {
+    if (!NY_X86_HOST) { printf("test_object_e2e_abi_fp_and_mixed: skipped (x86_64 host required)\n"); TEST_SKIP(0); }
     FILE *fc = fopen("bin/test_e2e_fp_host.c", "w");
     TEST_ASSERT(fc != nullptr);
     fputs(
@@ -1236,6 +1251,7 @@ void test_target_unsupported_types(void) {
 }
 
 void test_object_e2e_aggregate_values(void) {
+    if (!NY_X86_HOST) { printf("test_object_e2e_aggregate_values: skipped (x86_64 host required)\n"); TEST_SKIP(0); }
     FILE *fc = fopen("bin/test_e2e_agg_host.c", "w");
     TEST_ASSERT(fc != nullptr);
     fputs(
@@ -1331,6 +1347,7 @@ void test_object_e2e_aggregate_values(void) {
 }
 
 void test_object_e2e_aggregate_abi(void) {
+    if (!NY_X86_HOST) { printf("test_object_e2e_aggregate_abi: skipped (x86_64 host required)\n"); TEST_SKIP(0); }
     FILE *fc = fopen("bin/test_e2e_agg_abi_host.c", "w");
     TEST_ASSERT(fc != nullptr);
     fputs(

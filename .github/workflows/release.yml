@@ -52,6 +52,12 @@ jobs:
           chmod +x build.sh
           ./build.sh --run-tests
 
+      - name: Verify Zero Memory Leak and Native ARM64 Execution
+        run: |
+          ./bin/test_runner | tee test_out.txt
+          grep -qE "all [0-9]+ tests passed \([0-9]+ skipped, 0 bytes leaked\)" test_out.txt
+          ! grep -q "test_aarch64_rt_trivial_return: skipped" test_out.txt
+
       - name: Build Package
         run: |
           ./build.sh --package

@@ -87,7 +87,9 @@ const Ny_Target g_ny_target_aarch64_sysv = {
 };
 
 const Ny_Target *ny_target_get_default(void) {
-#if defined(_WIN32)
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return &g_ny_target_aarch64_sysv;
+#elif defined(_WIN32)
     return &g_ny_target_x86_64_win64;
 #else
     return &g_ny_target_x86_64_sysv;

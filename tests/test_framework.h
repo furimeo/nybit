@@ -21,6 +21,8 @@
 
 extern int g_tests_run;
 extern int g_tests_failed;
+extern int g_tests_skipped;
+extern bool g_test_skipped;
 
 #if defined(_WIN32)
 #define NYBIT_CLI_BIN "bin\\nybit.exe"
@@ -69,18 +71,29 @@ static inline int ny_test_system(const char *cmd) {
     } \
 } while (0)
 
+#define TEST_SKIP(reason) do { \
+    g_test_skipped = true; \
+    (void)(reason); \
+    return; \
+} while (0)
+
 #define RUN_TEST(fn) do { \
     size_t mem_before = g_ny_mem_tracker.current_allocated; \
     int failed_before = g_tests_failed; \
+    g_test_skipped = false; \
     g_tests_run++; \
     fn(); \
     if (g_tests_failed == failed_before) { \
-        size_t mem_after = g_ny_mem_tracker.current_allocated; \
-        if (mem_after != mem_before) { \
-            fprintf(stderr, "%s: leaked %zu bytes\n", #fn, mem_after - mem_before); \
-            g_tests_failed++; \
+        if (g_test_skipped) { \
+            g_tests_skipped++; \
         } else { \
-            printf("%s: ok\n", #fn); \
+            size_t mem_after = g_ny_mem_tracker.current_allocated; \
+            if (mem_after != mem_before) { \
+                fprintf(stderr, "%s: leaked %zu bytes\n", #fn, mem_after - mem_before); \
+                g_tests_failed++; \
+            } else { \
+                printf("%s: ok\n", #fn); \
+            } \
         } \
     } \
 } while (0)
