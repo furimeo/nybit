@@ -272,7 +272,7 @@ bool nyjit_link(Nyjit_Module *jit, const Nygen_Encoded_Module *mod,
                             break;
                         }
                         uint8_t *tramp = text_base + trampoline_offset;
-                        uint32_t ldr = 0x58000050u;
+                        uint32_t ldr = 0x58000030u;
                         memcpy(tramp, &ldr, 4);
                         memcpy(tramp + 4, &S, 8);
                         uint32_t br = 0xD61F0200;

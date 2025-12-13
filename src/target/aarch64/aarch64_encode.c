@@ -120,6 +120,11 @@ bool aarch64_encode_instruction(AArch64_Code_Buffer *buf, const AArch64_Instruct
             word = fmov
                  | ((uint32_t)reg_num(src) << 5)
                  | (uint32_t)reg_num(dst);
+        } else if (reg_num(src) == 31) {
+            /* MOV Rd, SP -> ADD Rd, SP, #0 */
+            word = sf_bit(dst.size) | 0x11000000u
+                 | ((uint32_t)31 << 5)
+                 | (uint32_t)reg_num(dst);
         } else {
             word = sf_bit(dst.size) | 0x2A000000u
                  | ((uint32_t)reg_num(src) << 16)

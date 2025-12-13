@@ -43,6 +43,15 @@ static int run_exe_in_dir(const char *dir, const char *exe) {
     }
     return 0;
 }
+
+static const char *test_find_compiler(void) {
+    const char *cc = getenv("CC");
+    if (cc && cc[0] != '\0') return cc;
+    static const char *local_gcc = "tools\\mingw\\bin\\gcc.exe";
+    FILE *f = fopen(local_gcc, "rb");
+    if (f) { fclose(f); return local_gcc; }
+    return "gcc";
+}
 #else
 #include <sys/stat.h>
 #include <unistd.h>
@@ -614,7 +623,10 @@ void test_cli_link_pe_dll_e2e(void) {
     const char *foo_c = "int foo(void) { return 42; }\n";
     write_file("bin/pe_e2e/foo.c", (const uint8_t *)foo_c, strlen(foo_c));
 
-    int ret_comp_dll = system("tools\\mingw\\bin\\gcc.exe -c bin/pe_e2e/foo.c -o bin/pe_e2e/foo.obj");
+    const char *cc = test_find_compiler();
+    char comp_cmd[512];
+    snprintf(comp_cmd, sizeof(comp_cmd), "%s -c bin/pe_e2e/foo.c -o bin/pe_e2e/foo.obj", cc);
+    int ret_comp_dll = system(comp_cmd);
     TEST_ASSERT_EQ(ret_comp_dll, 0);
 
     int ret_link_dll = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/pe_e2e/foo.obj --export=foo -o bin/pe_e2e/foo.dll");
@@ -631,7 +643,8 @@ void test_cli_link_pe_dll_e2e(void) {
     const char *main_c = "extern int foo(void);\nint entry(void) { return foo(); }\n";
     write_file("bin/pe_e2e/main.c", (const uint8_t *)main_c, strlen(main_c));
 
-    int ret_comp_main = system("tools\\mingw\\bin\\gcc.exe -c bin/pe_e2e/main.c -o bin/pe_e2e/main.obj");
+    snprintf(comp_cmd, sizeof(comp_cmd), "%s -c bin/pe_e2e/main.c -o bin/pe_e2e/main.obj", cc);
+    int ret_comp_main = system(comp_cmd);
     TEST_ASSERT_EQ(ret_comp_main, 0);
 
     int ret_link_app = system("bin\\nybit.exe link --target=pe-x86-64 --entry=entry bin/pe_e2e/main.obj bin/pe_e2e/foo.lib -o bin/pe_e2e/app.exe");
@@ -665,7 +678,10 @@ void test_cli_link_pe_data_e2e(void) {
     const char *dval_c = "int value = 42;\n";
     write_file("bin/pe_data_e2e/dval.c", (const uint8_t *)dval_c, strlen(dval_c));
 
-    int ret_comp_dll = system("tools\\mingw\\bin\\gcc.exe -c bin/pe_data_e2e/dval.c -o bin/pe_data_e2e/dval.obj");
+    const char *cc2 = test_find_compiler();
+    char comp_cmd2[512];
+    snprintf(comp_cmd2, sizeof(comp_cmd2), "%s -c bin/pe_data_e2e/dval.c -o bin/pe_data_e2e/dval.obj", cc2);
+    int ret_comp_dll = system(comp_cmd2);
     TEST_ASSERT_EQ(ret_comp_dll, 0);
 
     int ret_link_dll = system("bin\\nybit.exe link --target=pe-x86-64 --shared bin/pe_data_e2e/dval.obj --export=value -o bin/pe_data_e2e/dval.dll");
@@ -674,7 +690,8 @@ void test_cli_link_pe_data_e2e(void) {
     const char *main_c = "extern __declspec(dllimport) int value;\nint entry(void) { return value; }\n";
     write_file("bin/pe_data_e2e/main.c", (const uint8_t *)main_c, strlen(main_c));
 
-    int ret_comp_main = system("tools\\mingw\\bin\\gcc.exe -c bin/pe_data_e2e/main.c -o bin/pe_data_e2e/main.obj");
+    snprintf(comp_cmd2, sizeof(comp_cmd2), "%s -c bin/pe_data_e2e/main.c -o bin/pe_data_e2e/main.obj", cc2);
+    int ret_comp_main = system(comp_cmd2);
     TEST_ASSERT_EQ(ret_comp_main, 0);
 
     int ret_link_app = system("bin\\nybit.exe link --target=pe-x86-64 --entry=entry bin/pe_data_e2e/main.obj bin/pe_data_e2e/dval.lib -o bin/pe_data_e2e/app.exe");
