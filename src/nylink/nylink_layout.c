@@ -146,11 +146,11 @@ static void write_start_trampoline(Nylink_Context *ctx, uint64_t entry_fn_va) {
     if (ctx->machine == EM_AARCH64) {
         int64_t off = (int64_t)(entry_fn_va - tramp_va);
         uint32_t bl = 0x94000000u | (uint32_t)((off >> 2) & 0x03FFFFFFu);
-        uint32_t mov_x8_93 = 0xD2800BA8u;
+        uint32_t mov_x8_94 = 0xD2800BC8u;
         uint32_t svc0 = 0xD4000001u;
         uint32_t nop = 0xD503201Fu;
         memcpy(p + 0, &bl, 4);
-        memcpy(p + 4, &mov_x8_93, 4);
+        memcpy(p + 4, &mov_x8_94, 4);
         memcpy(p + 8, &svc0, 4);
         memcpy(p + 12, &nop, 4);
     } else {

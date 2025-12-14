@@ -311,7 +311,7 @@ bool nyjit_link(Nyjit_Module *jit, const Nygen_Encoded_Module *mod,
                     | ((uint32_t)patch_site[3] << 24);
                 uint32_t immlo = (uint32_t)(imm & 0x3);
                 uint32_t immhi = (uint32_t)((imm >> 2) & 0x7FFFF);
-                word = (word & ~0x9000001Fu) | (immlo << 29) | (immhi << 5);
+                word = (word & ~0x60FFFFE0u) | (immlo << 29) | (immhi << 5);
                 memcpy(patch_site, &word, 4);
             } else if (rk == NYGEN_RELOC_AARCH64_ADD_LO12) {
                 uint32_t imm12 = (uint32_t)(S & 0xFFF);

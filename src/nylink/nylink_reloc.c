@@ -458,7 +458,7 @@ bool nylink_apply_relocations_internal(Nylink_Context *ctx) {
                 | ((uint32_t)out_sec->data[target_sec_offset + 3] << 24);
             uint32_t immlo = (uint32_t)imm & 0x3;
             uint32_t immhi = (uint32_t)((imm >> 2) & 0x7FFFF);
-            word = (word & ~0x9000001Fu) | (immlo << 29) | (immhi << 5);
+            word = (word & ~0x60FFFFE0u) | (immlo << 29) | (immhi << 5);
             write_disp32(out_sec->data + target_sec_offset, word);
         } else if (reloc->type == NYLINK_RELOC_AARCH64_ADD_ABS_LO12_NC) {
             if (target_sec_offset + 4 > out_sec->data_capacity || target_sec_offset + 4 > out_sec->file_size) {
