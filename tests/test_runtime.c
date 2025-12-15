@@ -21,6 +21,12 @@
 #define PATH_SEP "/"
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
+#define NY_X86_HOST 1
+#else
+#define NY_X86_HOST 0
+#endif
+
 typedef enum {
     RT_ENV_NONE = 0,
     RT_ENV_WSL,
@@ -162,6 +168,7 @@ static void rt_detect_env(void) {
         pclose(pipe);
     }
 #else
+    if (!NY_X86_HOST) return;
     FILE *f = fopen("/bin/true", "rb");
     if (!f) f = fopen("/bin/ls", "rb");
     if (f) {
