@@ -3,6 +3,9 @@
 #include "nylink_internal.h"
 #include <stdio.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 
 #define ELF_MAGIC_0 0x7F
 #define ELF_MAGIC_1 'E'
@@ -751,5 +754,11 @@ bool nylink_write_elf_executable(Nylink_Context *ctx, const char *out_path, cons
     fwrite(shdrs, sizeof(Elf64_Shdr), shnum, f);
 
     fclose(f);
+
+#if !defined(_WIN32)
+    if (ctx->output_mode == NYLINK_OUTPUT_EXECUTABLE || ctx->output_mode == NYLINK_OUTPUT_PIE) {
+        chmod(out_path, 0755);
+    }
+#endif
     return true;
 }
