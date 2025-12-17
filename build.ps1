@@ -12,14 +12,17 @@ if (-not (Test-Path $Compiler)) {
     $Compiler = "gcc"
 }
 
-$compilerDir = Split-Path $Compiler
+$compilerDir = Split-Path $Compiler -ErrorAction SilentlyContinue
 if ($compilerDir -and (Test-Path $compilerDir)) {
     $env:PATH = "$compilerDir;$env:PATH"
+} else {
+    $compilerDir = ""
 }
 
-$Ar = Join-Path $compilerDir "ar.exe"
-if (-not (Test-Path $Ar)) {
-    $Ar = "ar"
+$Ar = if ($compilerDir -and (Test-Path (Join-Path $compilerDir "ar.exe"))) {
+    Join-Path $compilerDir "ar.exe"
+} else {
+    "ar"
 }
 
 if (-not (Test-Path "bin")) {
