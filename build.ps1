@@ -29,6 +29,8 @@ if (-not (Test-Path "bin")) {
     New-Item -ItemType Directory -Path "bin" | Out-Null
 }
 
+$CFlags = @("-std=c23", "-Wall", "-Wextra", "-Werror", "-g", "-Iinclude", "-ffile-prefix-map=$PSScriptRoot=.", "-frandom-seed=nybit", "-fdebug-prefix-map=$PSScriptRoot=.")
+
 $objDir = "bin/obj"
 if (Test-Path $objDir) {
     Remove-Item -Recurse -Force $objDir
@@ -50,7 +52,7 @@ foreach ($src in $nygenSources) {
     $objName = ($rel -replace '[\\/:]', '_') -replace '\.c$', '.o'
     $objPath = "$objDir/$objName"
     $nygenObjs += $objPath
-    & $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -c $src -o $objPath
+    & $Compiler $CFlags -c $src -o $objPath
     if ($LASTEXITCODE -ne 0) { exit 1 }
 }
 
@@ -63,7 +65,7 @@ foreach ($src in $nyjitSources) {
     $objName = ($rel -replace '[\\/:]', '_') -replace '\.c$', '.o'
     $objPath = "$objDir/$objName"
     $nyjitObjs += $objPath
-    & $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -c $src -o $objPath
+    & $Compiler $CFlags -c $src -o $objPath
     if ($LASTEXITCODE -ne 0) { exit 1 }
 }
 
@@ -76,21 +78,21 @@ foreach ($src in $nylinkSources) {
     $objName = ($rel -replace '[\\/:]', '_') -replace '\.c$', '.o'
     $objPath = "$objDir/$objName"
     $nylinkObjs += $objPath
-    & $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -c $src -o $objPath
+    & $Compiler $CFlags -c $src -o $objPath
     if ($LASTEXITCODE -ne 0) { exit 1 }
 }
 
 & $Ar rcs bin/nylink.lib $nylinkObjs
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-& $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude src/main.c bin/nylink.lib bin/nygen.lib -o bin/nybit.exe
+& $Compiler $CFlags src/main.c bin/nylink.lib bin/nygen.lib -o bin/nybit.exe
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-& $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude -Itests $testSources bin/nylink.lib bin/nyjit.lib bin/nygen.lib -o bin/test_runner.exe
+& $Compiler $CFlags -Itests $testSources bin/nylink.lib bin/nyjit.lib bin/nygen.lib -o bin/test_runner.exe
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 if (Test-Path "tests/bench_main.c") {
-    & $Compiler -std=c23 -Wall -Wextra -Werror -g -Iinclude tests/bench_main.c bin/nyjit.lib bin/nygen.lib -o bin/bench.exe
+    & $Compiler $CFlags tests/bench_main.c bin/nyjit.lib bin/nygen.lib -o bin/bench.exe
     if ($LASTEXITCODE -ne 0) { exit 1 }
 }
 

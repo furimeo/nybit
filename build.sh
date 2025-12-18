@@ -8,7 +8,7 @@ STD_FLAG="-std=c23"
 if ! $CC -std=c23 -E -xc /dev/null >/dev/null 2>&1; then
     STD_FLAG="-std=c2x"
 fi
-CFLAGS="${CFLAGS:-$STD_FLAG -Wall -Wextra -Werror -g -Iinclude -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L}"
+CFLAGS="${CFLAGS:-$STD_FLAG -Wall -Wextra -Werror -g -Iinclude -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L -ffile-prefix-map=$(pwd)=. -frandom-seed=nybit -fdebug-prefix-map=$(pwd)=.}"
 AR="${AR:-ar}"
 BIN_DIR="bin"
 OBJ_DIR="bin/obj"
