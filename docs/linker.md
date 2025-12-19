@@ -32,7 +32,7 @@ nybit link <inputs...> [-o <output>] [--target=<target>] [-L<dir>] [-l<name>] [-
 ## Features & Capabilities
 
 - **Static Executable Emission**:
-  - ELF64 (x86-64 and AArch64) with raw entry-point resolution (`_start` or custom `--entry`).
+  - ELF64 (x86-64 and AArch64) with automatic `_start` trampoline synthesis (BL main; exit_group syscall) when no `_start` symbol is present, or raw entry-point resolution via custom `--entry`.
   - Windows PE32+ (AMD64) with full Optional Header and section headers (`.text`, `.rdata`, `.data`, `.pdata`).
 - **Dynamic & Shared Library Emission**:
   - ELF64 `.so` with dynamic symbol table (`.dynsym`), string table (`.dynstr`), hash table (`.hash`), `.dynamic` section, and dynamic relocations (`.rela.dyn`, `.rela.plt`).
