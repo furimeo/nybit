@@ -80,6 +80,11 @@ ctest --test-dir build
 - **Continuous Integration**: GitHub Actions testing matrix covering Linux x86-64 (native runner & QEMU fallback), Linux ARM64 (native runner `ubuntu-24.04-arm`), Windows x86-64 (MSYS2 UCRT64), and automated release packaging.
 - **Known Limitations & Core V1 Freeze**: Advanced dynamic linking features (such as GNU hash, RELR packed relocations, thread-local storage / TLS, IFUNC, symbol versioning, lazy binding, copy relocations, linker scripts, and LTO) are explicit non-goals for Core V1.
 
+## Documentation
+
+- [NyIR Reference](docs/nyir.md) — complete syntax, instruction set, and examples
+- [Linker Driver](docs/linker.md) — `nybit link` command syntax and ELF/PE emission
+
 ## License
 
 Mozilla Public License 2.0 (MPL-2.0). See [LICENSE](LICENSE) for details.
