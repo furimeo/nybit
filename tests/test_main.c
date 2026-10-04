@@ -17,6 +17,7 @@ void test_parse_add_canonical(void);
 void test_parse_abs_control_flow(void);
 void test_ir_golden_roundtrip(void);
 void test_parser_diagnostics(void);
+void test_parser_string_and_array_globals(void);
 
 void test_dominance_same_block_violation(void);
 void test_dominance_cross_block_violation(void);
@@ -292,6 +293,7 @@ int main(void) {
     RUN_TEST(test_parse_abs_control_flow);
     RUN_TEST(test_ir_golden_roundtrip);
     RUN_TEST(test_parser_diagnostics);
+    RUN_TEST(test_parser_string_and_array_globals);
 
     RUN_TEST(test_dominance_same_block_violation);
     RUN_TEST(test_dominance_cross_block_violation);

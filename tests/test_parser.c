@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Le Hung Quang Minh (furimeo)
 #include "test_framework.h"
 #include <nybit/ir.h>
@@ -292,3 +292,41 @@ void test_parser_diagnostics(void) {
         ny_context_destroy(&ctx);
     }
 }
+
+void test_parser_string_and_array_globals(void) {
+    const char *src =
+        "@global @readonly @greeting: [14]i8 = \"Hello, World!\\n\";\n"
+        "@global @numbers: [4]i8 = [10, 20, 30, 40];\n"
+        "\n"
+        "@function get_char() -> i8;\n"
+        ".entry;\n"
+        "    %ptr = global_addr @greeting;\n"
+        "    %c = load %ptr;\n"
+        "    @return %c;\n"
+        ";;\n";
+
+    Ny_Context ctx;
+    ny_context_init(&ctx, "test_globals");
+    Ny_Parser p;
+    ny_parser_init(&p, &ctx.module, src, strlen(src), &ctx.arena);
+    bool ok = ny_parse_module(&p);
+    TEST_ASSERT(ok);
+    TEST_ASSERT_EQ(p.diag_count, 0);
+
+    Ny_Global *g1 = ny_module_get_global_by_name(&ctx.module, "greeting");
+    TEST_ASSERT(g1 != NULL);
+    TEST_ASSERT_EQ(g1->kind, NY_GLOBAL_CONST);
+    TEST_ASSERT_EQ(g1->init_size, 14);
+    TEST_ASSERT(memcmp(g1->init_bytes, "Hello, World!\n", 14) == 0);
+
+    Ny_Global *g2 = ny_module_get_global_by_name(&ctx.module, "numbers");
+    TEST_ASSERT(g2 != NULL);
+    TEST_ASSERT_EQ(g2->kind, NY_GLOBAL_DATA);
+    TEST_ASSERT_EQ(g2->init_size, 4);
+    const uint8_t expected_nums[] = { 10, 20, 30, 40 };
+    TEST_ASSERT(memcmp(g2->init_bytes, expected_nums, 4) == 0);
+
+    ny_parser_destroy(&p);
+    ny_context_destroy(&ctx);
+}
+

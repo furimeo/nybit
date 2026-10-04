@@ -208,6 +208,34 @@ Ny_Token ny_lexer_next(Ny_Lexer *lex) {
         return tok;
     }
 
+    // Strings: "..."
+    if (c == '"') {
+        advance_char(lex); // consume opening quote
+        size_t start = lex->pos;
+        while (lex->pos < lex->len) {
+            char ch = peek_char(lex);
+            if (ch == '"') {
+                break;
+            }
+            if (ch == '\\' && lex->pos + 1 < lex->len) {
+                advance_char(lex);
+                advance_char(lex);
+                continue;
+            }
+            if (ch == '\n') {
+                break;
+            }
+            advance_char(lex);
+        }
+        size_t content_len = lex->pos - start;
+        if (peek_char(lex) == '"') {
+            advance_char(lex); // consume closing quote
+        }
+        tok.kind = NY_TOK_STRING;
+        tok.text = ny_str_slice(lex->src + start, content_len);
+        return tok;
+    }
+
     // Unexpected character
     advance_char(lex);
     tok.kind = NY_TOK_EOF;

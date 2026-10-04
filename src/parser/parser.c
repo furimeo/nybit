@@ -64,10 +64,34 @@ static Ny_Type_ID lookup_type(Ny_Module *mod, Ny_String name) {
     if (ny_str_eq_cstr(name, "i128")) return NY_TYPE_I128;
     if (ny_str_eq_cstr(name, "f16"))  return NY_TYPE_F16;
     if (ny_str_eq_cstr(name, "f32"))  return NY_TYPE_F32;
-    if (ny_str_eq_cstr(name, "f64"))  return NY_TYPE_F64;
-    if (ny_str_eq_cstr(name, "ptr"))  return NY_TYPE_PTR;
+    if (ny_str_eq_cstr(name, "ptr"))    return NY_TYPE_PTR;
+    if (ny_str_eq_cstr(name, "string")) return NY_TYPE_PTR;
 
-    // Vector types: v4i32, v8i32, etc.
+    // Array types: [14]i8 or [14 x i8]
+    if (name.len > 2 && name.data[0] == '[') {
+        size_t idx = 1;
+        uint32_t count = 0;
+        while (idx < name.len && name.data[idx] >= '0' && name.data[idx] <= '9') {
+            count = count * 10 + (uint32_t)(name.data[idx] - '0');
+            idx++;
+        }
+        while (idx < name.len && (name.data[idx] == ' ' || name.data[idx] == 'x')) {
+            idx++;
+        }
+        if (idx < name.len && name.data[idx] == ']') {
+            idx++;
+        }
+        while (idx < name.len && name.data[idx] == ' ') {
+            idx++;
+        }
+        if (count > 0 && idx < name.len) {
+            Ny_String elem_name = ny_str_slice(name.data + idx, name.len - idx);
+            Ny_Type_ID elem_t = lookup_type(mod, elem_name);
+            if (elem_t != NY_INVALID_TYPE) {
+                return ny_type_table_add_array(&mod->types, elem_t, count);
+            }
+        }
+    }
     if (name.len > 2 && name.data[0] == 'v') {
         size_t idx = 1;
         uint16_t lanes = 0;
@@ -713,6 +737,39 @@ static bool parse_function(Ny_Parser *p) {
     return true;
 }
 
+static size_t unescape_string(Ny_String raw, uint8_t *out_buf, size_t out_max) {
+    size_t out_idx = 0;
+    for (size_t i = 0; i < raw.len && out_idx < out_max; i++) {
+        if (raw.data[i] == '\\' && i + 1 < raw.len) {
+            i++;
+            switch (raw.data[i]) {
+            case 'n': out_buf[out_idx++] = '\n'; break;
+            case 't': out_buf[out_idx++] = '\t'; break;
+            case 'r': out_buf[out_idx++] = '\r'; break;
+            case '0': out_buf[out_idx++] = '\0'; break;
+            case '\\': out_buf[out_idx++] = '\\'; break;
+            case '"': out_buf[out_idx++] = '"'; break;
+            case 'x': {
+                if (i + 2 < raw.len) {
+                    char hex[3] = { raw.data[i+1], raw.data[i+2], 0 };
+                    out_buf[out_idx++] = (uint8_t)strtoul(hex, NULL, 16);
+                    i += 2;
+                } else {
+                    out_buf[out_idx++] = 'x';
+                }
+                break;
+            }
+            default:
+                out_buf[out_idx++] = (uint8_t)raw.data[i];
+                break;
+            }
+        } else {
+            out_buf[out_idx++] = (uint8_t)raw.data[i];
+        }
+    }
+    return out_idx;
+}
+
 static bool parse_global(Ny_Parser *p) {
     advance_tok(p); /* consume @global */
 
@@ -736,14 +793,38 @@ static bool parse_global(Ny_Parser *p) {
         return false;
     }
 
-    if (p->curr.kind != NY_TOK_IDENT) {
+    Ny_Type_ID type = NY_INVALID_TYPE;
+    if (p->curr.kind == NY_TOK_LBRACKET) {
+        advance_tok(p); /* consume '[' */
+        if (p->curr.kind != NY_TOK_INT) {
+            report_error(p, "expected array size inside brackets", p->curr.line, p->curr.col);
+            return false;
+        }
+        uint32_t count = (uint32_t)advance_tok(p).int_val;
+        if (p->curr.kind == NY_TOK_IDENT && ny_str_eq_cstr(p->curr.text, "x")) {
+            advance_tok(p); /* optional 'x' */
+        }
+        if (!expect_tok(p, NY_TOK_RBRACKET)) return false;
+        if (p->curr.kind != NY_TOK_IDENT) {
+            report_error(p, "expected element type for array", p->curr.line, p->curr.col);
+            return false;
+        }
+        Ny_Token elem_tok = advance_tok(p);
+        Ny_Type_ID elem_t = lookup_type(p->module, elem_tok.text);
+        if (elem_t == NY_INVALID_TYPE) {
+            report_error(p, "unknown element type for array", elem_tok.line, elem_tok.col);
+            return false;
+        }
+        type = ny_type_table_add_array(&p->module->types, elem_t, count);
+    } else if (p->curr.kind == NY_TOK_IDENT) {
+        Ny_Token type_tok = advance_tok(p);
+        type = lookup_type(p->module, type_tok.text);
+        if (type == NY_INVALID_TYPE) {
+            report_error(p, "unknown type for global", type_tok.line, type_tok.col);
+            return false;
+        }
+    } else {
         report_error(p, "expected type for global", p->curr.line, p->curr.col);
-        return false;
-    }
-    Ny_Token type_tok = advance_tok(p);
-    Ny_Type_ID type = lookup_type(p->module, type_tok.text);
-    if (type == NY_INVALID_TYPE) {
-        report_error(p, "unknown type for global", type_tok.line, type_tok.col);
         return false;
     }
 
@@ -752,16 +833,56 @@ static bool parse_global(Ny_Parser *p) {
     uint32_t align = type_sz > 8 ? 8 : type_sz;
 
     Ny_Global_Kind kind = is_readonly ? NY_GLOBAL_CONST : NY_GLOBAL_DATA;
-    uint8_t init_buf[16] = {0};
+    uint8_t stack_buf[16] = {0};
+    uint8_t *heap_buf = NULL;
+    size_t heap_alloc_size = 0;
+    const uint8_t *active_buf = NULL;
     size_t init_size = type_sz;
 
     if (p->curr.kind == NY_TOK_EQUAL) {
         advance_tok(p);
         if (p->curr.kind == NY_TOK_INT) {
             int64_t val = advance_tok(p).int_val;
-            memcpy(init_buf, &val, type_sz <= 8 ? type_sz : 8);
+            memcpy(stack_buf, &val, type_sz <= 8 ? type_sz : 8);
+            active_buf = stack_buf;
+            init_size = type_sz;
+        } else if (p->curr.kind == NY_TOK_STRING) {
+            Ny_Token str_tok = advance_tok(p);
+            size_t max_len = str_tok.text.len + 1;
+            heap_alloc_size = max_len;
+            heap_buf = (uint8_t *)ny_alloc(heap_alloc_size);
+            size_t dec_len = unescape_string(str_tok.text, heap_buf, max_len);
+            active_buf = heap_buf;
+            init_size = dec_len;
+        } else if (p->curr.kind == NY_TOK_LBRACKET) {
+            advance_tok(p); /* consume '[' */
+            size_t cap = 16;
+            size_t cnt = 0;
+            heap_buf = (uint8_t *)ny_alloc(cap);
+            while (p->curr.kind != NY_TOK_RBRACKET && p->curr.kind != NY_TOK_EOF) {
+                if (p->curr.kind == NY_TOK_INT) {
+                    if (cnt >= cap) {
+                        size_t ncap = cap * 2;
+                        heap_buf = (uint8_t *)ny_realloc(heap_buf, cap, ncap);
+                        cap = ncap;
+                    }
+                    heap_buf[cnt++] = (uint8_t)advance_tok(p).int_val;
+                }
+                if (p->curr.kind == NY_TOK_COMMA) {
+                    advance_tok(p);
+                } else {
+                    break;
+                }
+            }
+            if (!expect_tok(p, NY_TOK_RBRACKET)) {
+                if (heap_buf) ny_free(heap_buf, cap);
+                return false;
+            }
+            heap_alloc_size = cap;
+            active_buf = heap_buf;
+            init_size = cnt;
         } else {
-            report_error(p, "expected literal integer for global initializer", p->curr.line, p->curr.col);
+            report_error(p, "expected literal integer, string, or byte array for global initializer", p->curr.line, p->curr.col);
             return false;
         }
     } else {
@@ -769,6 +890,7 @@ static bool parse_global(Ny_Parser *p) {
     }
 
     if (!expect_tok(p, NY_TOK_SEMICOLON)) {
+        if (heap_buf) ny_free(heap_buf, heap_alloc_size);
         return false;
     }
 
@@ -780,17 +902,21 @@ static bool parse_global(Ny_Parser *p) {
         existing->type = type;
         existing->kind = kind;
         existing->align = align;
-        existing->init_size = init_size;
         if (existing->init_bytes) {
             ny_free(existing->init_bytes, existing->init_size);
             existing->init_bytes = NULL;
         }
-        if (kind != NY_GLOBAL_BSS) {
+        existing->init_size = init_size;
+        if (kind != NY_GLOBAL_BSS && active_buf && init_size > 0) {
             existing->init_bytes = (uint8_t *)ny_alloc(init_size);
-            memcpy(existing->init_bytes, init_buf, init_size);
+            memcpy(existing->init_bytes, active_buf, init_size);
         }
     } else {
-        ny_module_create_global(p->module, name, type, kind, align, kind != NY_GLOBAL_BSS ? init_buf : NULL, init_size);
+        ny_module_create_global(p->module, name, type, kind, align, (kind != NY_GLOBAL_BSS) ? active_buf : NULL, init_size);
+    }
+
+    if (heap_buf) {
+        ny_free(heap_buf, heap_alloc_size);
     }
 
     return true;

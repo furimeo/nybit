@@ -15,3 +15,7 @@ dist/
 *.log
 nul
 test_out.txt
+
+# Private agent & design documents
+AGENTS.md
+*DESIGN*.md

@@ -29,7 +29,7 @@ static void aarch64_rt_detect(void) {
     g_aarch64_rt_checked = true;
 
 #if defined(_WIN32) || defined(_WIN64)
-    FILE *pipe = popen("wsl.exe -d Debian /bin/bash -lc \"which qemu-aarch64-static qemu-aarch64 2>/dev/null | head -1\" 2>nul", "r");
+    FILE *pipe = popen("wsl.exe -d Debian /bin/bash -c \"which qemu-aarch64-static qemu-aarch64 2>/dev/null | head -1\" 2>nul", "r");
     if (pipe) {
         char buf[512];
         if (fgets(buf, sizeof(buf), pipe)) {
@@ -96,10 +96,10 @@ static int aarch64_rt_run(const char *exe_path) {
 
     char cmd[2048];
     if (g_aarch64_rt == AARCH64_RT_QEMU) {
-        snprintf(cmd, sizeof(cmd), "wsl.exe -d Debian /bin/bash -lc \"%s %s; echo EXIT:$?\" 2>nul",
+        snprintf(cmd, sizeof(cmd), "wsl.exe -d Debian /bin/bash -c \"%s '%s'; echo EXIT:\\$?\" 2>nul",
                  g_aarch64_runner, wsl_path);
     } else {
-        snprintf(cmd, sizeof(cmd), "wsl.exe -d Debian /bin/bash -lc \"%s; echo EXIT:$?\" 2>nul", wsl_path);
+        snprintf(cmd, sizeof(cmd), "wsl.exe -d Debian /bin/bash -c \"'%s'; echo EXIT:\\$?\" 2>nul", wsl_path);
     }
 #else
     char cmd[2048];

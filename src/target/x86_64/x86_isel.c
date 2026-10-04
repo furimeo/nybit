@@ -566,6 +566,24 @@ static void lower_instruction(X86_Block *xblk, const Ny_Machine_Function *mfn,
             }
         }
 
+        if (abi == NY_ABI_SYSV_AMD64) {
+            uint8_t fp_reg_args = 0;
+            for (size_t a = 0; a < total_args; a++) {
+                if (args[a].is_fp && !args[a].is_mem) {
+                    fp_reg_args++;
+                }
+            }
+            X86_Instruction set_al = {
+                .opcode = (fp_reg_args == 0) ? X86_OPC_XOR : X86_OPC_MOV,
+                .size = (fp_reg_args == 0) ? 4 : 1,
+                .cond = X86_COND_NONE,
+                .op_count = 2,
+                .ops = { x86_op_reg(x86_reg_phys(X86_RAX, (fp_reg_args == 0) ? 4 : 1)),
+                         (fp_reg_args == 0) ? x86_op_reg(x86_reg_phys(X86_RAX, 4)) : x86_op_imm(fp_reg_args) }
+            };
+            x86_block_append_inst(xblk, set_al);
+        }
+
         X86_Operand callee = lower_operand(mops[0], frame);
         X86_Instruction call_inst = {
             .opcode = X86_OPC_CALL,
